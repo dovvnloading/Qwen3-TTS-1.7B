@@ -143,5 +143,3 @@ If you use the underlying model in research, please cite:
 ---
 
 **License:** This wrapper is released under MIT. The Qwen3-TTS model weights are licensed under Apache 2.0.
-```
---- END OF CODE UPDATE FOR: README.md ---
