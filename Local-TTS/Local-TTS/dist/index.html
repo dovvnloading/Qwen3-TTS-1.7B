@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Qwen3-TTS Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              background: '#212121',
+              text: '#e0e0e0',
+              'text-muted': '#7d7d7d',
+              accent: '#ffffff',
+            },
+            fontFamily: {
+              sans: ['Manrope', 'sans-serif'],
+            },
+            boxShadow: {
+              // The Core Neumorphic Shadows
+              'neu-flat': '8px 8px 16px #161616, -8px -8px 16px #2c2c2c',
+              'neu-pressed': 'inset 6px 6px 12px #161616, inset -6px -6px 12px #2c2c2c',
+              'neu-icon': '5px 5px 10px #161616, -5px -5px 10px #2c2c2c',
+              'neu-icon-pressed': 'inset 3px 3px 6px #161616, inset -3px -3px 6px #2c2c2c',
+              'neu-slider-track': 'inset 2px 2px 5px #161616, inset -2px -2px 5px #2c2c2c',
+              'neu-slider-thumb': '4px 4px 8px #161616, -4px -4px 8px #2c2c2c',
+            },
+            backgroundImage: {
+               'neu-gradient': 'linear-gradient(145deg, #232323, #1e1e1e)',
+            }
+          },
+        },
+      }
+    </script>
+    <style>
+      body {
+        background-color: #212121;
+        color: #e0e0e0;
+      }
+      
+      /* Custom Scrollbar to match Neumorphism */
+      ::-webkit-scrollbar {
+        width: 10px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #212121; 
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #333; 
+        border-radius: 5px;
+        border: 2px solid #212121;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #444; 
+      }
+      
+      /* Input Reset */
+      input[type=range] {
+        -webkit-appearance: none; 
+        background: transparent; 
+      }
+      input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+      }
+      input[type=range]:focus {
+        outline: none; 
+      }
+    </style>
+
+<link rel="stylesheet" href="/index.css">
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "lucide-react": "https://esm.sh/lucide-react@^0.563.0"
+  }
+}
+</script>
+  <script type="module" crossorigin src="/assets/index-Dv5Uf0KT.js"></script>
+</head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
