@@ -1,7 +1,7 @@
 
 #  Qwen3-TTS Studio (Local Desktop Wrapper)
 
-> A state-of-the-art, dark neumorphic desktop interface for the powerful **Qwen3-TTS** model (1.7B CustomVoice). Run offline, ultra-low latency text-to-speech with emotive control directly on your GPU.
+> A desktop interface for the powerful **Qwen3-TTS** model (1.7B CustomVoice). Run offline, ultra-low latency text-to-speech with emotive control directly on your GPU.
 
 <img width="1920" height="1080" alt="graphite-render-1920x1080-1769409476829" src="https://github.com/user-attachments/assets/ff566a4a-4895-4270-83da-1ba821ce85d7" />
 
