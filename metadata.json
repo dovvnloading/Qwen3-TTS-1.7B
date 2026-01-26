@@ -1,0 +1,5 @@
+{
+  "name": "Qwen3-TTS Studio",
+  "description": "A state-of-the-art dark neumorphic frontend for Qwen3-TTS generation.",
+  "requestFramePermissions": []
+}
