@@ -9,7 +9,7 @@
 ##  Features
 
 *   **Offline Privacy**: Runs entirely on your local machine using PyTorch & CUDA.
-*   **Neumorphic UI**: A modern, dark-themed React frontend designed for focus and aesthetics.
+*   **Clean Simple UI**: A modern, dark-themed React frontend designed for focus and aesthetics.
 *   **Deep Control**:
     *   **9 Premium Voices**: From "Ryan" (Dynamic Male) to "Ono_Anna" (Playful Japanese).
     *   **10+ Languages**: English, Chinese, Japanese, Korean, German, French, etc.
