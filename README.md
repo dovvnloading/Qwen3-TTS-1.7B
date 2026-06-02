@@ -15,7 +15,7 @@
     *   **10+ Languages**: English, Chinese, Japanese, Korean, German, French, etc.
     *   **Style Instructions**: Use natural language (e.g., "Whispering and terrified") to direct the emotion.
 *   **Visual Feedback**: Real-time audio visualization and precise seeking.
-*   **Desktop Experience**: Wraps the web engine into a native window—no browser tabs required.
+*   **Desktop Experience**: Wraps the web engine into a native window no browser tabs required.
 
 ---
 
