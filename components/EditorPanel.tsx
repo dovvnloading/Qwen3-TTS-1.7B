@@ -3,34 +3,37 @@ import React from 'react';
 interface EditorPanelProps {
   text: string;
   onChange: (val: string) => void;
+  onSubmit: () => void;
 }
 
-export const EditorPanel: React.FC<EditorPanelProps> = ({ text, onChange }) => {
+export const EditorPanel: React.FC<EditorPanelProps> = ({ text, onChange, onSubmit }) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl/Cmd+Enter generates without reaching for the mouse.
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      onSubmit();
+    }
+  };
+
   return (
-    <div className="flex-1 p-8 md:p-12 flex flex-col h-full bg-background">
-      
-      <div className="flex items-center justify-between mb-8 px-2">
-         <h1 className="text-2xl font-extrabold text-white tracking-tight flex items-center gap-3">
-          QWEN3<span className="text-text-muted">TTS</span>
-        </h1>
-        <div className="text-xs font-bold text-text-muted bg-background px-4 py-2 rounded-full shadow-neu-flat">
-          MODEL v1.7B
-        </div>
-      </div>
-      
-      {/* The Text Tray - A massive inset container */}
-      <div className="flex-1 relative rounded-3xl shadow-neu-pressed p-2">
+    <div className="flex-1 min-w-0 p-5 flex flex-col">
+      <div className="flex-1 relative rounded-xl shadow-neu-pressed">
         <textarea
           value={text}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Enter text to synthesize..."
-          className="w-full h-full bg-transparent p-8 text-lg md:text-xl leading-relaxed text-gray-200 placeholder-gray-600 outline-none resize-none font-sans border-none"
+          onKeyDown={handleKeyDown}
+          placeholder="Enter text to synthesize…"
+          aria-label="Text to synthesize"
+          className="w-full h-full bg-transparent rounded-xl px-5 py-4 pb-10 text-[15px] leading-relaxed
+                     text-text placeholder:text-text-muted/70 outline-none resize-none border-none"
           spellCheck={false}
         />
-        
-        {/* Character Count */}
-        <div className="absolute bottom-6 right-8 text-xs font-bold text-text-muted bg-background px-3 py-1 rounded-lg shadow-neu-flat">
-          {text.length} chars
+
+        <div className="absolute bottom-3 right-4 flex items-center gap-2.5 pointer-events-none">
+          <kbd className="text-[10px] font-semibold text-text-muted/70 tracking-wide">Ctrl+↵</kbd>
+          <span className="text-[10px] font-semibold text-text-muted tabular-nums">
+            {text.length}
+          </span>
         </div>
       </div>
     </div>

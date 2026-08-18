@@ -8,16 +8,17 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
 
 export const Select: React.FC<SelectProps> = ({ label, options, className = '', ...props }) => {
   return (
-    <div className="flex flex-col gap-3 w-full group">
-      <label className="text-xs font-bold text-text-muted uppercase tracking-widest pl-2">
+    <div className="flex flex-col gap-1.5 w-full group">
+      <label className="text-[10px] font-bold text-text-muted uppercase tracking-[0.12em] pl-0.5">
         {label}
       </label>
       <div className="relative">
         <select
           className={`
-            w-full appearance-none bg-background text-text rounded-xl px-6 py-4 pr-12
-            shadow-neu-pressed border-none outline-none transition-all duration-200
-            focus:text-white cursor-pointer text-sm font-semibold
+            w-full appearance-none bg-background text-text rounded-lg pl-3.5 pr-9 py-2.5
+            shadow-neu-pressed border-none outline-none cursor-pointer
+            text-[13px] font-medium transition-colors
+            focus-visible:ring-2 focus-visible:ring-white/20 hover:text-white
             ${className}
           `}
           {...props}
@@ -28,9 +29,10 @@ export const Select: React.FC<SelectProps> = ({ label, options, className = '', 
             </option>
           ))}
         </select>
-        <div className="absolute right-5 top-1/2 -translate-y-1/2 pointer-events-none text-text-muted group-hover:text-white transition-colors">
-          <ChevronDown size={18} />
-        </div>
+        <ChevronDown
+          size={14}
+          className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-text-muted group-hover:text-text transition-colors"
+        />
       </div>
     </div>
   );

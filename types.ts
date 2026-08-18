@@ -3,6 +3,9 @@ export interface TTSConfig {
   speaker: string;
   language: string;
   styleInstruction: string;
+  mode: 'preset' | 'clone';
+  refAudioFile: File | null;
+  refText: string;
 }
 
 export interface PlaybackState {
@@ -20,4 +23,15 @@ export enum AppStatus {
   PLAYING = "Playing",
   ERROR = "Error",
   SUCCESS = "Success",
+}
+
+export interface ModelAvailability {
+  custom: boolean;
+  base: boolean;
+}
+
+export interface AppConfig {
+  modelsDir: string;
+  downloadMode: boolean;
+  models: ModelAvailability;
 }
