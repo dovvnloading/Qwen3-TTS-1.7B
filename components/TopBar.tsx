@@ -1,12 +1,23 @@
 import React from 'react';
 import { Settings } from 'lucide-react';
+import { ModelState } from '../types';
 
 interface TopBarProps {
-  isModelReady: boolean;
+  modelState: ModelState;
+  modelDetail: string;
   onOpenSettings: () => void;
 }
 
-export const TopBar: React.FC<TopBarProps> = ({ isModelReady, onOpenSettings }) => {
+const STATUS_STYLES: Record<ModelState, { label: string; dot: string; text: string }> = {
+  ready: { label: 'Ready', dot: 'bg-emerald-400', text: 'text-text-muted' },
+  loading: { label: 'Loading', dot: 'bg-amber-400 animate-pulse', text: 'text-text-muted' },
+  idle: { label: 'Idle', dot: 'bg-text-muted', text: 'text-text-muted' },
+  error: { label: 'No model', dot: 'bg-red-400', text: 'text-red-400' },
+};
+
+export const TopBar: React.FC<TopBarProps> = ({ modelState, modelDetail, onOpenSettings }) => {
+  const s = STATUS_STYLES[modelState];
+
   return (
     <header className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-line/70">
       <div className="flex items-center gap-2.5">
@@ -20,15 +31,11 @@ export const TopBar: React.FC<TopBarProps> = ({ isModelReady, onOpenSettings }) 
 
       <div className="flex items-center gap-2.5">
         <div
-          className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-text-muted"
-          title={isModelReady ? 'Model loaded and ready' : 'Loading model into VRAM'}
+          className={`flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.1em] ${s.text}`}
+          title={modelDetail || s.label}
         >
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${
-              isModelReady ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'
-            }`}
-          />
-          {isModelReady ? 'Ready' : 'Loading'}
+          <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+          {s.label}
         </div>
 
         <button

@@ -20,6 +20,23 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 # left behind.
 _SINGLE_INSTANCE_MUTEX_NAME = "Local-TTS-Qwen3-Studio-SingleInstance"
 _ERROR_ALREADY_EXISTS = 183
+_instance_mutex = None
+
+def release_single_instance_lock():
+    """Drop the single-instance mutex.
+
+    Required before os.execv: on Windows execv does NOT replace the process in
+    place like it does on POSIX — it spawns a new process and exits this one.
+    The new process would otherwise start while this one still holds the mutex,
+    conclude an instance is already running, and exit, killing the restart.
+    """
+    global _instance_mutex
+    if os.name == 'nt' and _instance_mutex:
+        try:
+            ctypes.windll.kernel32.CloseHandle(_instance_mutex)
+        except Exception:
+            pass
+        _instance_mutex = None
 
 if os.name == 'nt':
     _instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
@@ -109,12 +126,31 @@ MODEL_IDS = {
     "base": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
 }
 
-backend_ready = threading.Event()
+# Set as soon as the HTTP server is accepting connections. The window waits on
+# THIS, not on the model being loaded: the UI has to be reachable before a model
+# is ready, otherwise the settings screen that fixes a bad model path can never
+# be opened in the first place.
+server_ready = threading.Event()
+
+# Guards active_model_state. A background preload and an incoming /api/generate
+# can otherwise race: one swapping models out of VRAM while the other is
+# mid-generation with the instance it just took.
+model_lock = threading.RLock()
 
 active_model_state = {
     "type": None,
     "instance": None
 }
+
+# idle | loading | ready | error
+model_status = {
+    "state": "idle",
+    "detail": "",
+}
+
+def set_model_status(state: str, detail: str = ""):
+    model_status["state"] = state
+    model_status["detail"] = detail
 
 def _model_cache_folder(repo_id: str, models_dir: str) -> str:
     return os.path.join(models_dir, "models--" + repo_id.replace("/", "--"))
@@ -129,6 +165,10 @@ def is_model_cached(repo_id: str, models_dir: str) -> bool:
     return False
 
 def load_model_instance(model_type: str):
+    """Load `model_type`, evicting any currently-resident model first.
+
+    Callers must hold model_lock; this mutates global state and VRAM.
+    """
     global active_model_state
 
     if active_model_state["type"] == model_type and active_model_state["instance"] is not None:
@@ -174,15 +214,51 @@ def load_model_instance(model_type: str):
         print(f"--- ❌ LOAD FAILED: {e} ---")
         raise e
 
+def ensure_model(model_type: str):
+    """Return a ready instance of `model_type`, loading it if necessary."""
+    with model_lock:
+        if active_model_state["type"] == model_type and active_model_state["instance"] is not None:
+            set_model_status("ready")
+            return active_model_state["instance"]
+
+        set_model_status("loading", f"Loading {model_type} model into memory…")
+        try:
+            model = load_model_instance(model_type)
+            set_model_status("ready")
+            return model
+        except Exception as e:
+            set_model_status("error", str(e))
+            raise
+
+def preload_model(model_type: str = "custom"):
+    """Background startup/retry load.
+
+    Reports a missing model as a normal 'error' state rather than raising, so
+    the UI can show it and point the user at Settings.
+    """
+    model_id = MODEL_IDS[model_type]
+    if not app_config["download_mode"] and not is_model_cached(model_id, app_config["models_dir"]):
+        detail = (
+            f"No model found in {app_config['models_dir']}. Open Settings to point at the "
+            "folder containing your models, or enable downloading."
+        )
+        set_model_status("error", detail)
+        print(f"--- ⚠️  {detail} ---")
+        return
+    try:
+        ensure_model(model_type)
+    except Exception as e:
+        print(f"--- ❌ Model load failed: {e} ---")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        load_model_instance("custom")
-        print("--- Backend Fully Loaded & Model Ready ---")
-    except Exception as e:
-        print(f"Startup Error: {e}")
-    finally:
-        backend_ready.set()
+    # The model loads on a background thread so the window can open straight
+    # away. Blocking here previously meant that if the model was missing or the
+    # path was wrong, the user sat in front of a console with no GUI at all —
+    # including no way to reach the settings screen that would fix it.
+    set_model_status("loading", "Starting up…")
+    threading.Thread(target=preload_model, daemon=True).start()
+    server_ready.set()
 
     yield
 
@@ -200,8 +276,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Deliberately a sync `def`: FastAPI runs sync endpoints in a worker thread,
+# whereas an `async def` would run model loading and generation directly on the
+# event loop and block every other request — including the /api/status polling
+# the UI relies on to show progress.
 @app.post("/api/generate")
-async def generate_audio(
+def generate_audio(
     text: str = Form(...),
     language: str = Form("Auto"),
     speaker: str = Form("Ryan"),
@@ -216,9 +296,9 @@ async def generate_audio(
     required_model_type = "base" if is_cloning_request else "custom"
 
     try:
-        model = load_model_instance(required_model_type)
+        model = ensure_model(required_model_type)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Model swap error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
     tmp_path = None
     try:
@@ -268,7 +348,20 @@ async def generate_audio(
 
 @app.get("/api/status")
 async def get_status():
-    return {"status": "ready" if active_model_state["instance"] is not None else "loading"}
+    return {
+        "status": model_status["state"],
+        "detail": model_status["detail"],
+        "modelType": active_model_state["type"],
+    }
+
+@app.post("/api/load")
+async def trigger_load():
+    """Retry a model load — used after the user fixes the path in Settings."""
+    if model_status["state"] == "loading":
+        return {"status": "loading", "detail": model_status["detail"]}
+    set_model_status("loading", "Loading model into memory…")
+    threading.Thread(target=preload_model, daemon=True).start()
+    return {"status": "loading", "detail": model_status["detail"]}
 
 class ConfigUpdate(BaseModel):
     modelsDir: str
@@ -290,6 +383,7 @@ async def get_config():
 
 def restart_app():
     print("--- 🔄 Restarting to apply new model settings ---")
+    release_single_instance_lock()
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 @app.post("/api/config")
@@ -372,6 +466,36 @@ def configure_window_ui():
         except Exception as e:
             print(f"[UI Warning] Failed to configure window: {e}")
 
+_console_handler_ref = None
+
+def install_console_close_handler():
+    """Exit cleanly when the console window is closed.
+
+    Closing the console kills this process, but the WebView2 child processes it
+    spawned are not attached to that console and can outlive it, leaving a
+    zombie holding VRAM. Handling the close/logoff/shutdown events lets us tear
+    the whole tree down ourselves instead of being force-killed mid-cleanup.
+    """
+    global _console_handler_ref
+    if os.name != 'nt':
+        return
+
+    CTRL_C_EVENT, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT = 0, 1, 2
+    CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT = 5, 6
+    HANDLER_TYPE = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+
+    def _handler(event):
+        if event in (CTRL_C_EVENT, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT,
+                     CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
+            print("--- Console closed, shutting down. ---")
+            os._exit(0)
+        return False
+
+    # Held in a module global: if this callback is garbage collected while
+    # Windows still holds the pointer, the process crashes on console close.
+    _console_handler_ref = HANDLER_TYPE(_handler)
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler_ref, True)
+
 if __name__ == "__main__":
     # Fix Taskbar Grouping (Required for icon to show in Taskbar)
     if os.name == 'nt':
@@ -381,6 +505,8 @@ if __name__ == "__main__":
         except Exception:
             pass
 
+    install_console_close_handler()
+
     t = threading.Thread(target=start_backend)
     t.daemon = True
     t.start()
@@ -388,10 +514,12 @@ if __name__ == "__main__":
     print("\n---------------------------------------------------------")
     print(f"Initializing Qwen3-TTS Backend on {HOST}:{PORT}")
     print(f"Models directory: {app_config['models_dir']} (download mode: {app_config['download_mode']})")
-    print("Please wait while the AI model loads into memory...")
+    print("Opening window; the model loads in the background.")
     print("---------------------------------------------------------\n")
 
-    if backend_ready.wait(timeout=300):
+    # Wait only for the HTTP server, not the model. 30s is generous for binding
+    # a local port, and keeps a wedged model load from blocking the window.
+    if server_ready.wait(timeout=30):
         webview.create_window(
             title='Qwen3-TTS Studio',
             url=f'http://{HOST}:{PORT}',
@@ -412,5 +540,5 @@ if __name__ == "__main__":
         print("--- Window closed, shutting down. ---")
         os._exit(0)
     else:
-        print("Timeout: Backend took too long to start.")
+        print("Timeout: the local server did not start.")
         sys.exit(1)

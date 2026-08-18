@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { AlertTriangle, X } from 'lucide-react';
-import { TTSConfig, PlaybackState, AppStatus, AppConfig } from './types';
+import { AlertTriangle, X, RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { TTSConfig, PlaybackState, AppStatus, AppConfig, ModelState } from './types';
 import { SPEAKERS, LANGUAGES } from './constants';
 import { TopBar } from './components/TopBar';
 import { EditorPanel } from './components/EditorPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { PlayerBar } from './components/PlayerBar';
 import { SettingsModal } from './components/SettingsModal';
+import { Button } from './components/ui/Button';
 
 const App: React.FC = () => {
   const [config, setConfig] = useState<TTSConfig>({
@@ -20,8 +21,10 @@ const App: React.FC = () => {
   });
 
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
-  const [isModelReady, setIsModelReady] = useState(false);
+  const [modelState, setModelState] = useState<ModelState>('loading');
+  const [modelDetail, setModelDetail] = useState('');
   const [isRestarting, setIsRestarting] = useState(false);
+  const isModelReady = modelState === 'ready';
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,25 +54,48 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const waitForBackend = useCallback((onReady: () => void) => {
+  // Poll continuously rather than only until first-ready: the model can drop
+  // back to loading (a swap between preset/clone) or to error (bad path), and
+  // the UI needs to reflect that, not just the initial startup.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number;
+
     const poll = async () => {
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
-        if (data.status === 'ready') onReady();
-        else setTimeout(poll, 2000);
+        if (cancelled) return;
+        setModelState(data.status);
+        setModelDetail(data.detail || '');
+        // A response at all means the server is up; if we were waiting out a
+        // restart, it has come back.
+        setIsRestarting(false);
       } catch {
-        setTimeout(poll, 2000); // backend not up yet
+        // Server unreachable (still starting, or mid-restart) — leave the
+        // current state alone and retry.
       }
+      if (!cancelled) timer = window.setTimeout(poll, 1500);
     };
+
     poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  const retryLoad = useCallback(async () => {
+    setModelState('loading');
+    setModelDetail('Loading model into memory…');
+    try {
+      await fetch('/api/load', { method: 'POST' });
+    } catch (e) {
+      console.error('Failed to trigger load', e);
+    }
   }, []);
 
   useEffect(() => {
-    waitForBackend(() => {
-      setIsModelReady(true);
-      setStatus(AppStatus.IDLE);
-    });
     refreshAppConfig();
 
     const audio = new Audio();
@@ -104,27 +130,25 @@ const App: React.FC = () => {
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
       if (audio.src) URL.revokeObjectURL(audio.src);
     };
-  }, [waitForBackend, refreshAppConfig]);
+  }, [refreshAppConfig]);
 
   const handleConfigSaved = useCallback(
     (restarting: boolean) => {
-      if (!restarting) {
-        refreshAppConfig();
+      if (restarting) {
+        // Changing the models directory needs a process restart: the HF cache
+        // location is read once at import time. The status poller clears this
+        // overlay as soon as the new process answers.
+        setIsRestarting(true);
+        setModelState('loading');
+        setModelDetail('Restarting to apply the new models directory…');
         return;
       }
-      setIsRestarting(true);
-      setIsModelReady(false);
-      // Let the old process actually exit before polling the new one.
-      setTimeout(() => {
-        waitForBackend(() => {
-          setIsRestarting(false);
-          setIsModelReady(true);
-          setStatus(AppStatus.IDLE);
-          refreshAppConfig();
-        });
-      }, 2000);
+      // Nothing needed a restart, so just retry the load in place — this is
+      // what makes fixing a bad path actually recoverable without relaunching.
+      refreshAppConfig();
+      retryLoad();
     },
-    [waitForBackend, refreshAppConfig],
+    [refreshAppConfig, retryLoad],
   );
 
   const handleGenerate = async () => {
@@ -211,7 +235,35 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen w-full bg-background text-text overflow-hidden font-sans selection:bg-white selection:text-black">
-      <TopBar isModelReady={isModelReady} onOpenSettings={() => setIsSettingsOpen(true)} />
+      <TopBar
+        modelState={modelState}
+        modelDetail={modelDetail}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+      />
+
+      {modelState === 'error' && (
+        <div className="shrink-0 flex items-start gap-3 px-4 py-3 border-b border-red-400/25 bg-red-400/[0.06]">
+          <AlertTriangle size={15} className="text-red-400 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] font-bold uppercase tracking-[0.1em] text-red-400">
+              Model not loaded
+            </p>
+            <p className="text-[11px] leading-relaxed text-text/80 mt-1">
+              {modelDetail || 'The model could not be loaded.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button size="sm" onClick={() => setIsSettingsOpen(true)}>
+              <SlidersHorizontal size={12} />
+              Settings
+            </Button>
+            <Button size="sm" onClick={retryLoad}>
+              <RefreshCw size={12} />
+              Retry
+            </Button>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
         <EditorPanel

@@ -25,6 +25,14 @@ export enum AppStatus {
   SUCCESS = "Success",
 }
 
+export type ModelState = 'idle' | 'loading' | 'ready' | 'error';
+
+export interface BackendStatus {
+  status: ModelState;
+  detail: string;
+  modelType: string | null;
+}
+
 export interface ModelAvailability {
   custom: boolean;
   base: boolean;
