@@ -42,7 +42,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const textareaClass =
     'w-full bg-background rounded-lg shadow-neu-pressed px-3.5 py-2.5 text-[13px] leading-relaxed ' +
     'text-text placeholder:text-text-muted/70 outline-none resize-none border-none ' +
-    'focus-visible:ring-2 focus-visible:ring-white/20';
+    'focus-visible:ring-2 focus-visible:ring-accent/40';
 
   return (
     <aside className="w-full md:w-[330px] shrink-0 flex flex-col border-l border-line/70">
@@ -59,9 +59,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               key={key}
               onClick={() => setMode(key)}
               aria-pressed={config.mode === key}
-              className={`flex items-center justify-center gap-1.5 py-2 rounded-md text-[11px] font-bold uppercase tracking-[0.1em] transition-all outline-none focus-visible:ring-2 focus-visible:ring-white/25 ${
+              className={`flex items-center justify-center gap-1.5 py-2 rounded-md text-[11px] font-bold uppercase tracking-[0.1em] transition-all outline-none focus-visible:ring-2 focus-visible:ring-accent/45 ${
                 config.mode === key
-                  ? 'bg-background shadow-neu-flat text-white'
+                  ? 'bg-background shadow-neu-flat text-strong'
                   : 'text-text-muted hover:text-text'
               }`}
             >
@@ -116,7 +116,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   <button
                     onClick={() => setConfig((p) => ({ ...p, refAudioFile: null }))}
                     aria-label="Remove reference audio"
-                    className="text-text-muted hover:text-white shrink-0 transition-colors"
+                    className="text-text-muted hover:text-strong shrink-0 transition-colors"
                   >
                     <XIcon size={13} />
                   </button>
@@ -125,7 +125,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="flex flex-col items-center justify-center gap-1.5 rounded-lg shadow-neu-pressed py-5
-                             text-text-muted hover:text-text transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                             text-text-muted hover:text-text transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                 >
                   <UploadCloud size={17} />
                   <span className="text-[11px] font-semibold">Upload a voice sample</span>

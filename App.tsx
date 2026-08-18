@@ -8,6 +8,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { PlayerBar } from './components/PlayerBar';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/Button';
+import { useTheme } from './useTheme';
 
 const App: React.FC = () => {
   const [config, setConfig] = useState<TTSConfig>({
@@ -38,6 +39,8 @@ const App: React.FC = () => {
     muted: false,
     isReady: false,
   });
+
+  const { theme, toggleTheme } = useTheme();
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Kept in a ref so the Ctrl+Enter handler never fires a stale closure.
@@ -242,10 +245,12 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen w-full bg-background text-text overflow-hidden font-sans selection:bg-white selection:text-black">
+    <div className="flex flex-col h-screen w-full bg-background text-text overflow-hidden font-sans">
       <TopBar
         modelState={modelState}
         modelDetail={modelDetail}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
@@ -288,13 +293,13 @@ const App: React.FC = () => {
         />
 
         {error && (
-          <div className="absolute bottom-4 left-4 right-4 md:right-auto md:max-w-md flex items-start gap-2.5 rounded-lg border border-red-400/30 bg-[#2a1f1f] px-3.5 py-2.5 shadow-neu-flat">
-            <AlertTriangle size={14} className="text-red-400 mt-0.5 shrink-0" />
+          <div className="absolute bottom-4 left-4 right-4 md:right-auto md:max-w-md flex items-start gap-2.5 rounded-lg border border-danger-line bg-danger-bg px-3.5 py-2.5 shadow-neu-flat">
+            <AlertTriangle size={14} className="text-danger-text mt-0.5 shrink-0" />
             <p className="flex-1 text-[11px] leading-relaxed text-text/90 break-words">{error}</p>
             <button
               onClick={() => setError(null)}
               aria-label="Dismiss error"
-              className="text-text-muted hover:text-white shrink-0 transition-colors"
+              className="text-text-muted hover:text-strong shrink-0 transition-colors"
             >
               <X size={13} />
             </button>
@@ -303,6 +308,7 @@ const App: React.FC = () => {
       </div>
 
       <PlayerBar
+        theme={theme}
         playback={playback}
         onPlayPause={handlePlayPause}
         onSeek={handleSeek}
@@ -318,9 +324,9 @@ const App: React.FC = () => {
       />
 
       {isRestarting && (
-        <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-3 bg-black/80 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-3 bg-scrim backdrop-blur-sm">
           <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-          <div className="text-[11px] font-bold text-white tracking-[0.12em] uppercase">
+          <div className="text-[11px] font-bold text-strong tracking-[0.12em] uppercase">
             Applying settings &amp; restarting
           </div>
         </div>

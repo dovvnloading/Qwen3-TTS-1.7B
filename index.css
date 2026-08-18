@@ -1,32 +1,101 @@
 @import "tailwindcss";
 
 /*
-  Qwen3-TTS Studio design tokens.
+  Two themes, one token set.
 
-  Neumorphism, but restrained: shadow spread is roughly half of a classic
-  neumorphic scale so panels read as gently raised rather than inflated.
-  Light source stays top-left throughout, so every raised/inset pair uses the
-  same two ink colours below.
+  Every colour below is defined twice — once per theme — and the Tailwind
+  tokens reference them through `@theme inline`, which emits `var(--app-…)`
+  into the utilities instead of baking a literal value. That is what lets the
+  theme swap at runtime by flipping `data-theme` on <html>.
+
+  Light is modelled on Anthropic's palette: warm paper rather than stark white
+  (#faf9f5 ground, #f0eee6 ivory for recessed surfaces) with the clay accent
+  (#c96442). Neumorphism actually originated on warm light greys, so the raised
+  /inset language carries over cleanly — it just needs warm ink and a true
+  white highlight instead of the dark pair.
 */
-@theme {
-  --color-background: #212121;
-  --color-surface: #252525;
-  --color-line: #2e2e2e;
-  --color-text: #e4e4e4;
-  --color-text-muted: #7a7a7a;
-  --color-accent: #ffffff;
+
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --app-bg: #faf9f5;          /* warm paper ground */
+  --app-surface: #f0eee6;     /* Anthropic ivory, for recessed panels */
+  --app-line: #e4e0d5;
+  --app-text: #33312c;        /* warm body text */
+  --app-text-muted: #78756c;
+  --app-strong: #191817;      /* headings / high-emphasis */
+  --app-accent: #c96442;      /* clay */
+  --app-track-fill: #c96442;
+
+  --app-scrim: rgb(41 39 35 / 0.42);
+  --app-danger-bg: #fdf3f0;
+  --app-danger-line: rgb(180 76 47 / 0.35);
+  --app-danger-text: #a8452a;
+
+  /* Neumorphic ink: warm shadow, true white highlight. */
+  --neu-dark: #e0dbcd;
+  --neu-light: #ffffff;
+
+  --viz-bar-top: rgb(120 116 106 / 0.95);
+  --viz-bar-bottom: rgb(160 155 143 / 0.75);
+
+  --scrollbar-thumb: #d8d3c5;
+  --scrollbar-thumb-hover: #c7c1b0;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --app-bg: #212121;
+  --app-surface: #252525;
+  --app-line: #2e2e2e;
+  --app-text: #e4e4e4;
+  --app-text-muted: #7a7a7a;
+  --app-strong: #ffffff;
+  --app-accent: #d97757;      /* lifted clay, readable on dark */
+  --app-track-fill: rgb(255 255 255 / 0.28);
+
+  --app-scrim: rgb(0 0 0 / 0.7);
+  --app-danger-bg: #2a1f1f;
+  --app-danger-line: rgb(248 113 113 / 0.3);
+  --app-danger-text: #f87171;
+
+  --neu-dark: #191919;
+  --neu-light: #292929;
+
+  --viz-bar-top: rgb(255 255 255 / 0.85);
+  --viz-bar-bottom: rgb(110 110 110 / 0.6);
+
+  --scrollbar-thumb: #333333;
+  --scrollbar-thumb-hover: #414141;
+}
+
+@theme inline {
+  --color-background: var(--app-bg);
+  --color-surface: var(--app-surface);
+  --color-line: var(--app-line);
+  --color-text: var(--app-text);
+  --color-text-muted: var(--app-text-muted);
+  --color-strong: var(--app-strong);
+  --color-accent: var(--app-accent);
+  --color-track-fill: var(--app-track-fill);
+  --color-scrim: var(--app-scrim);
+  --color-danger-bg: var(--app-danger-bg);
+  --color-danger-line: var(--app-danger-line);
+  --color-danger-text: var(--app-danger-text);
 
   --font-sans: Manrope, ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
 
   /* Raised */
-  --shadow-neu-flat: 5px 5px 10px #191919, -5px -5px 10px #292929;
-  --shadow-neu-icon: 3px 3px 6px #191919, -3px -3px 6px #292929;
-  --shadow-neu-slider-thumb: 2px 2px 5px #191919, -2px -2px 4px #2b2b2b;
+  --shadow-neu-flat: 5px 5px 10px var(--neu-dark), -5px -5px 10px var(--neu-light);
+  --shadow-neu-icon: 3px 3px 6px var(--neu-dark), -3px -3px 6px var(--neu-light);
+  --shadow-neu-slider-thumb: 2px 2px 5px var(--neu-dark), -2px -2px 4px var(--neu-light);
 
   /* Inset */
-  --shadow-neu-pressed: inset 3px 3px 7px #191919, inset -3px -3px 7px #292929;
-  --shadow-neu-icon-pressed: inset 2px 2px 4px #191919, inset -2px -2px 4px #292929;
-  --shadow-neu-slider-track: inset 2px 2px 4px #191919, inset -1px -1px 3px #2b2b2b;
+  --shadow-neu-pressed: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light);
+  --shadow-neu-icon-pressed: inset 2px 2px 4px var(--neu-dark), inset -2px -2px 4px var(--neu-light);
+  --shadow-neu-slider-track: inset 2px 2px 4px var(--neu-dark), inset -1px -1px 3px var(--neu-light);
 }
 
 @layer base {
@@ -37,10 +106,15 @@
   }
 
   body {
-    background-color: var(--color-background);
-    color: var(--color-text);
+    background-color: var(--app-bg);
+    color: var(--app-text);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background-color: var(--app-accent);
+    color: #ffffff;
   }
 
   ::-webkit-scrollbar {
@@ -51,25 +125,24 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #333;
+    background: var(--scrollbar-thumb);
     border-radius: 4px;
-    border: 2px solid var(--color-background);
+    border: 2px solid var(--app-bg);
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #414141;
+    background: var(--scrollbar-thumb-hover);
   }
 
-  /* Range inputs are fully custom-drawn in RangeSlider; strip native chrome. */
+  /* Range inputs are fully custom-drawn in RangeSlider; strip native chrome.
+     The thumb is invisible (the input is opacity-0) but its WIDTH still
+     defines how the browser maps a click position to a value: the usable
+     track is inset by half a thumb at each end. It must match the width the
+     visual thumb is drawn at in RangeSlider. Keep in sync with THUMB_PX. */
   input[type="range"] {
     -webkit-appearance: none;
     appearance: none;
     background: transparent;
   }
-  /* The thumb is invisible (the input is opacity-0) but its WIDTH still
-     defines how the browser maps a click position to a value: the usable
-     track is inset by half a thumb at each end. It must match the width the
-     visual thumb is drawn at in RangeSlider, or the handle won't sit under
-     the cursor. Keep in sync with THUMB_PX there. */
   input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 14px;
@@ -81,7 +154,7 @@
 
   /* Native dropdown list (the popup itself can't take Tailwind classes). */
   select option {
-    background-color: #252525;
-    color: var(--color-text);
+    background-color: var(--app-bg);
+    color: var(--app-text);
   }
 }

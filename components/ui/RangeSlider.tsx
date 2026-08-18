@@ -44,7 +44,7 @@ export const RangeSlider: React.FC<RangeSliderProps> = ({
       {/* Inset track */}
       <div className="absolute w-full h-1.5 bg-background rounded-full shadow-neu-slider-track overflow-hidden">
         <div
-          className="h-full bg-white/25 group-hover:bg-white/40 transition-colors"
+          className="h-full bg-track-fill/70 group-hover:bg-track-fill transition-colors"
           style={{ width: fillWidth }}
         />
       </div>

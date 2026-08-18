@@ -6,6 +6,8 @@ import { Button } from './ui/Button';
 import { AudioVisualizer } from './ui/AudioVisualizer';
 
 interface PlayerBarProps {
+  /** Forwarded to the canvas visualiser, which cannot read CSS variables. */
+  theme?: string;
   playback: PlaybackState;
   onPlayPause: () => void;
   onSeek: (val: number) => void;
@@ -21,6 +23,7 @@ const formatTime = (seconds: number) => {
 };
 
 export const PlayerBar: React.FC<PlayerBarProps> = ({
+  theme,
   playback,
   onPlayPause,
   onSeek,
@@ -50,7 +53,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
       </Button>
 
       <div className="flex-1 min-w-0 flex flex-col gap-1">
-        <AudioVisualizer isPlaying={playback.isPlaying} className="w-full h-6" />
+        <AudioVisualizer isPlaying={playback.isPlaying} theme={theme} className="w-full h-6" />
         <div className="flex items-center gap-2.5">
           <span className="text-[10px] font-semibold text-text-muted tabular-nums w-8 text-right">
             {formatTime(playback.currentTime)}
@@ -73,8 +76,8 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
         <button
           onClick={onToggleMute}
           aria-label={muted ? 'Unmute' : 'Mute'}
-          className={`shrink-0 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/25 rounded ${
-            silent ? 'text-text-muted' : 'text-text hover:text-white'
+          className={`shrink-0 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/45 rounded ${
+            silent ? 'text-text-muted' : 'text-text hover:text-strong'
           }`}
         >
           {silent ? <VolumeX size={15} /> : <Volume2 size={15} />}
