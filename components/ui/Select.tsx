@@ -18,7 +18,7 @@ export const Select: React.FC<SelectProps> = ({ label, options, className = '', 
             w-full appearance-none bg-background text-text rounded-lg pl-3.5 pr-9 py-2.5
             shadow-neu-pressed border-none outline-none cursor-pointer
             text-[13px] font-medium transition-colors
-            focus-visible:ring-2 focus-visible:ring-white/20 hover:text-white
+            focus-visible:ring-2 focus-visible:ring-accent/40 hover:text-strong
             ${className}
           `}
           {...props}

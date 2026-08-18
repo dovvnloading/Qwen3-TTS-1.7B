@@ -2,10 +2,16 @@ import React, { useEffect, useRef } from 'react';
 
 interface AudioVisualizerProps {
   isPlaying: boolean;
+  /** Only used to re-read the themed bar colours; canvas can't inherit CSS. */
+  theme?: string;
   className?: string;
 }
 
-export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ isPlaying, className = '' }) => {
+export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
+  isPlaying,
+  theme,
+  className = '',
+}) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -35,10 +41,15 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ isPlaying, cla
       const barCount = Math.floor(width / (barWidth + gap));
       const mid = height / 2;
 
+      // Canvas can't use CSS variables directly, so read the themed values off
+      // the element. Without this the bars stay white and vanish on light.
+      const css = getComputedStyle(canvas);
+      const top = css.getPropertyValue('--viz-bar-top').trim() || 'rgba(255,255,255,0.85)';
+      const bottom = css.getPropertyValue('--viz-bar-bottom').trim() || 'rgba(110,110,110,0.6)';
+
       const gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, 'rgba(255,255,255,0.85)');
-      gradient.addColorStop(0.5, 'rgba(190,190,190,0.75)');
-      gradient.addColorStop(1, 'rgba(110,110,110,0.6)');
+      gradient.addColorStop(0, top);
+      gradient.addColorStop(1, bottom);
       ctx.fillStyle = gradient;
 
       for (let i = 0; i < barCount; i++) {
@@ -89,7 +100,8 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ isPlaying, cla
       cancelAnimationFrame(animationId);
       observer.disconnect();
     };
-  }, [isPlaying]);
+    // `theme` is in here so a theme switch repaints the bars in the new colours.
+  }, [isPlaying, theme]);
 
   return (
     <div className={`relative rounded-lg bg-background overflow-hidden ${className}`}>

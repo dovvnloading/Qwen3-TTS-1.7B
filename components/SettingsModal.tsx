@@ -62,7 +62,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-scrim backdrop-blur-sm p-6"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -74,13 +74,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         className="w-full max-w-[440px] bg-background rounded-xl shadow-neu-flat border border-line/70 p-5 flex flex-col gap-4"
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-[13px] font-extrabold tracking-[0.1em] uppercase text-white">
+          <h2 className="text-[13px] font-extrabold tracking-[0.1em] uppercase text-strong">
             Model Source
           </h2>
           <button
             onClick={onClose}
             aria-label="Close settings"
-            className="w-7 h-7 flex items-center justify-center rounded-full bg-background text-text-muted shadow-neu-icon hover:text-white active:shadow-neu-icon-pressed transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/25"
+            className="w-7 h-7 flex items-center justify-center rounded-full bg-background text-text-muted shadow-neu-icon hover:text-strong active:shadow-neu-icon-pressed transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
           >
             <X size={13} />
           </button>
@@ -102,7 +102,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               placeholder="D:\Models"
               spellCheck={false}
               className="w-full bg-background rounded-lg shadow-neu-pressed pl-9 pr-3.5 py-2.5 text-[12px] font-mono
-                         text-text placeholder:text-text-muted/70 outline-none border-none focus-visible:ring-2 focus-visible:ring-white/20"
+                         text-text placeholder:text-text-muted/70 outline-none border-none focus-visible:ring-2 focus-visible:ring-accent/40"
             />
           </div>
           <p className="text-[10px] text-text-muted leading-relaxed pl-0.5">
@@ -127,13 +127,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             aria-checked={downloadMode}
             aria-label="Allow download"
             onClick={() => setDownloadMode((v) => !v)}
-            className={`relative w-11 h-6 rounded-full shrink-0 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/25 ${
-              downloadMode ? 'bg-emerald-500/70' : 'shadow-neu-pressed'
+            className={`relative w-11 h-6 rounded-full shrink-0 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/45 ${
+              downloadMode ? 'bg-accent' : 'shadow-neu-pressed'
             }`}
           >
             <span
-              className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white/90 shadow-neu-icon transition-transform ${
-                downloadMode ? 'translate-x-5' : ''
+              className={`absolute top-1 left-1 w-4 h-4 rounded-full shadow-neu-icon transition-transform ${
+                downloadMode ? 'translate-x-5 bg-white' : 'bg-background'
               }`}
             />
           </button>
@@ -160,7 +160,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {error && (
-          <div className="text-[11px] text-red-400 font-medium rounded-lg border border-red-400/25 bg-red-400/5 px-3 py-2">
+          <div className="text-[11px] text-danger-text font-medium rounded-lg border border-danger-line bg-danger-bg px-3 py-2">
             {error}
           </div>
         )}
