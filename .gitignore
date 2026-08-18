@@ -1,0 +1,20 @@
+# Node
+node_modules/
+
+# Python virtual environment (recreate with: python -m venv .venv)
+.venv/
+__pycache__/
+*.pyc
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+
+# Local machine config (models directory / download mode).
+# Generated with defaults on first run.
+Local-TTS/Local-TTS/app_config.json
+
+# Local scratch / backups
+dist_backup_*/
+*.wav

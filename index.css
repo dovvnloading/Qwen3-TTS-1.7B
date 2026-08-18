@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/*
+  Qwen3-TTS Studio design tokens.
+
+  Neumorphism, but restrained: shadow spread is roughly half of a classic
+  neumorphic scale so panels read as gently raised rather than inflated.
+  Light source stays top-left throughout, so every raised/inset pair uses the
+  same two ink colours below.
+*/
+@theme {
+  --color-background: #212121;
+  --color-surface: #252525;
+  --color-line: #2e2e2e;
+  --color-text: #e4e4e4;
+  --color-text-muted: #7a7a7a;
+  --color-accent: #ffffff;
+
+  --font-sans: Manrope, ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+
+  /* Raised */
+  --shadow-neu-flat: 5px 5px 10px #191919, -5px -5px 10px #292929;
+  --shadow-neu-icon: 3px 3px 6px #191919, -3px -3px 6px #292929;
+  --shadow-neu-slider-thumb: 2px 2px 5px #191919, -2px -2px 4px #2b2b2b;
+
+  /* Inset */
+  --shadow-neu-pressed: inset 3px 3px 7px #191919, inset -3px -3px 7px #292929;
+  --shadow-neu-icon-pressed: inset 2px 2px 4px #191919, inset -2px -2px 4px #292929;
+  --shadow-neu-slider-track: inset 2px 2px 4px #191919, inset -1px -1px 3px #2b2b2b;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 4px;
+    border: 2px solid var(--color-background);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #414141;
+  }
+
+  /* Range inputs are fully custom-drawn in RangeSlider; strip native chrome. */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+  }
+  input[type="range"]:focus {
+    outline: none;
+  }
+
+  /* Native dropdown list (the popup itself can't take Tailwind classes). */
+  select option {
+    background-color: #252525;
+    color: var(--color-text);
+  }
+}
