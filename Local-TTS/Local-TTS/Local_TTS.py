@@ -425,7 +425,7 @@ def start_backend():
 
 def configure_window_ui():
     """
-    Applies Dark Mode and sets the correct System Speaker icon from mmres.dll.
+    Applies dark-mode titlebar styling and the app icon (app.ico).
     """
     if os.name != 'nt':
         return
@@ -451,14 +451,51 @@ def configure_window_ui():
             windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, byref(value), 4)
             windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, byref(value), 4)
 
-            # 2. SET SPEAKER ICON
-            # Source: mmres.dll (Multimedia Resources), Index 0 = Standard Speaker
-            h_icon = windll.shell32.ExtractIconW(0, "mmres.dll", 0)
+            # 2. SET APP ICON
+            icon_path = os.path.join(SCRIPT_DIR, "app.ico")
+            if os.path.isfile(icon_path):
+                IMAGE_ICON = 1
+                LR_LOADFROMFILE = 0x00000010
+                SM_CXICON, SM_CYICON = 11, 12
+                SM_CXSMICON, SM_CYSMICON = 49, 50
 
-            if h_icon:
-                windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_icon)
-                windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_icon)
-                print("[UI] Applied Speaker Icon (mmres.dll)")
+                user32 = windll.user32
+                # ctypes defaults to a 32-bit int return, which silently
+                # truncates 64-bit HICON/HWND handles. Declare them explicitly.
+                user32.LoadImageW.restype = c_void_p
+                user32.LoadImageW.argtypes = [
+                    c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+                    c_int, c_int, ctypes.c_uint,
+                ]
+                user32.SendMessageW.restype = c_void_p
+                user32.SendMessageW.argtypes = [c_void_p, ctypes.c_uint, c_void_p, c_void_p]
+
+                # Load the two sizes Windows asks for separately, so the title
+                # bar gets the hand-tuned small artwork instead of a downscaled
+                # 256px one.
+                h_small = user32.LoadImageW(
+                    None, icon_path, IMAGE_ICON,
+                    user32.GetSystemMetrics(SM_CXSMICON),
+                    user32.GetSystemMetrics(SM_CYSMICON),
+                    LR_LOADFROMFILE,
+                )
+                h_big = user32.LoadImageW(
+                    None, icon_path, IMAGE_ICON,
+                    user32.GetSystemMetrics(SM_CXICON),
+                    user32.GetSystemMetrics(SM_CYICON),
+                    LR_LOADFROMFILE,
+                )
+
+                if h_small:
+                    user32.SendMessageW(hwnd, WM_SETICON, c_void_p(ICON_SMALL), c_void_p(h_small))
+                if h_big:
+                    user32.SendMessageW(hwnd, WM_SETICON, c_void_p(ICON_BIG), c_void_p(h_big))
+                if h_small or h_big:
+                    print("[UI] Applied app icon (app.ico)")
+                else:
+                    print("[UI Warning] app.ico found but could not be loaded")
+            else:
+                print(f"[UI Warning] app.ico not found at {icon_path}")
 
             # 3. FORCE REDRAW
             windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
