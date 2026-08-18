@@ -2,12 +2,35 @@ import os
 import sys
 import json
 import threading
+import ctypes
 
 # Force UTF-8 so emoji in log messages below never crash a non-UTF-8 console
 # (this previously killed model loading silently: the print() itself raised
 # UnicodeEncodeError, which the broad except in lifespan() swallowed).
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
+# Single-instance guard, checked BEFORE any heavy imports (torch, qwen_tts,
+# fastapi, ...) below. A duplicate launch previously got far enough to start
+# loading a second ~4-5GB model into RAM/VRAM on top of an already-running
+# instance, which is what was behind repeated native crashes (access
+# violations in torch_cpu.dll, confirmed via Windows crash dumps) on this
+# 8GB GPU / 16GB RAM machine. The mutex is released automatically by the OS
+# when this process exits, even on a hard crash, so no stale lock can be
+# left behind.
+_SINGLE_INSTANCE_MUTEX_NAME = "Local-TTS-Qwen3-Studio-SingleInstance"
+_ERROR_ALREADY_EXISTS = 183
+
+if os.name == 'nt':
+    _instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+    if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "Qwen3-TTS Studio is already running. Check your taskbar or Task Manager for the existing instance.",
+            "Already Running",
+            0x30,  # MB_ICONWARNING
+        )
+        sys.exit(0)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -378,6 +401,16 @@ if __name__ == "__main__":
         )
 
         webview.start(func=configure_window_ui)
+
+        # webview.start() blocks until the window closes. Force a hard exit
+        # here instead of letting the interpreter shut down 'naturally': on
+        # Windows, pywebview/WebView2 can leave non-daemon threads (and the
+        # whole WebView2 child-process tree) alive after the window closes,
+        # so the process silently lingers holding VRAM/RAM. That zombie
+        # state is what compounds into the next launch's model load hitting
+        # memory pressure and crashing.
+        print("--- Window closed, shutting down. ---")
+        os._exit(0)
     else:
         print("Timeout: Backend took too long to start.")
         sys.exit(1)
