@@ -38,6 +38,9 @@ const App: React.FC = () => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Kept in a ref so the Ctrl+Enter handler never fires a stale closure.
   const generateRef = useRef<() => void>(() => {});
+  // Remembers the last non-zero volume so unmuting restores what the user
+  // actually set, instead of resetting to a hardcoded level.
+  const lastVolumeRef = useRef(0.7);
 
   const refreshAppConfig = useCallback(async () => {
     try {
@@ -197,8 +200,13 @@ const App: React.FC = () => {
   };
 
   const handleVolume = (vol: number) => {
+    if (vol > 0) lastVolumeRef.current = vol;
     setPlayback((p) => ({ ...p, volume: vol }));
     if (audioRef.current) audioRef.current.volume = vol;
+  };
+
+  const handleToggleMute = () => {
+    handleVolume(playback.volume === 0 ? lastVolumeRef.current : 0);
   };
 
   return (
@@ -239,6 +247,7 @@ const App: React.FC = () => {
         onPlayPause={handlePlayPause}
         onSeek={handleSeek}
         onVolumeChange={handleVolume}
+        onToggleMute={handleToggleMute}
       />
 
       <SettingsModal

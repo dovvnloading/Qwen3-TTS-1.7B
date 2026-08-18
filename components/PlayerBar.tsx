@@ -10,6 +10,7 @@ interface PlayerBarProps {
   onPlayPause: () => void;
   onSeek: (val: number) => void;
   onVolumeChange: (val: number) => void;
+  onToggleMute: () => void;
 }
 
 const formatTime = (seconds: number) => {
@@ -24,6 +25,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   onPlayPause,
   onSeek,
   onVolumeChange,
+  onToggleMute,
 }) => {
   const muted = playback.volume === 0;
 
@@ -66,7 +68,7 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
 
       <div className="hidden md:flex items-center gap-2 shrink-0 w-32">
         <button
-          onClick={() => onVolumeChange(muted ? 0.7 : 0)}
+          onClick={onToggleMute}
           aria-label={muted ? 'Unmute' : 'Mute'}
           className={`shrink-0 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/25 rounded ${
             muted ? 'text-text-muted' : 'text-text hover:text-white'
