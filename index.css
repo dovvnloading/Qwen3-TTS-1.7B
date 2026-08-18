@@ -65,8 +65,15 @@
     appearance: none;
     background: transparent;
   }
+  /* The thumb is invisible (the input is opacity-0) but its WIDTH still
+     defines how the browser maps a click position to a value: the usable
+     track is inset by half a thumb at each end. It must match the width the
+     visual thumb is drawn at in RangeSlider, or the handle won't sit under
+     the cursor. Keep in sync with THUMB_PX there. */
   input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
   }
   input[type="range"]:focus {
     outline: none;

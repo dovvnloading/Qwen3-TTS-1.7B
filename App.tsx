@@ -35,15 +35,13 @@ const App: React.FC = () => {
     duration: 0,
     currentTime: 0,
     volume: 0.7,
+    muted: false,
     isReady: false,
   });
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Kept in a ref so the Ctrl+Enter handler never fires a stale closure.
   const generateRef = useRef<() => void>(() => {});
-  // Remembers the last non-zero volume so unmuting restores what the user
-  // actually set, instead of resetting to a hardcoded level.
-  const lastVolumeRef = useRef(0.7);
 
   const refreshAppConfig = useCallback(async () => {
     try {
@@ -223,14 +221,24 @@ const App: React.FC = () => {
     if (audioRef.current) audioRef.current.currentTime = time;
   };
 
+  // volume and muted are deliberately independent, mirroring how
+  // HTMLMediaElement models them. Muting must never overwrite the level the
+  // user picked, or the slider position is destroyed every time they mute.
   const handleVolume = (vol: number) => {
-    if (vol > 0) lastVolumeRef.current = vol;
-    setPlayback((p) => ({ ...p, volume: vol }));
-    if (audioRef.current) audioRef.current.volume = vol;
+    // Raising the volume while muted unmutes, which is what every media player
+    // does — otherwise dragging the slider appears to do nothing.
+    const unmute = vol > 0;
+    setPlayback((p) => ({ ...p, volume: vol, muted: unmute ? false : p.muted }));
+    if (audioRef.current) {
+      audioRef.current.volume = vol;
+      if (unmute) audioRef.current.muted = false;
+    }
   };
 
   const handleToggleMute = () => {
-    handleVolume(playback.volume === 0 ? lastVolumeRef.current : 0);
+    const next = !playback.muted;
+    setPlayback((p) => ({ ...p, muted: next }));
+    if (audioRef.current) audioRef.current.muted = next;
   };
 
   return (

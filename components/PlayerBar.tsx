@@ -27,7 +27,10 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
   onVolumeChange,
   onToggleMute,
 }) => {
-  const muted = playback.volume === 0;
+  // Read the real flag. Inferring it from `volume === 0` conflated the two,
+  // so muting had to zero the volume — wiping out the slider position.
+  const muted = playback.muted;
+  const silent = muted || playback.volume === 0;
 
   return (
     <div className="h-[72px] shrink-0 flex items-center gap-4 px-4 border-t border-line/70">
@@ -71,12 +74,19 @@ export const PlayerBar: React.FC<PlayerBarProps> = ({
           onClick={onToggleMute}
           aria-label={muted ? 'Unmute' : 'Mute'}
           className={`shrink-0 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/25 rounded ${
-            muted ? 'text-text-muted' : 'text-text hover:text-white'
+            silent ? 'text-text-muted' : 'text-text hover:text-white'
           }`}
         >
-          {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+          {silent ? <VolumeX size={15} /> : <Volume2 size={15} />}
         </button>
-        <RangeSlider min={0} max={1} value={playback.volume} onChange={onVolumeChange} className="flex-1" />
+        {/* Always reflects the chosen level; muting dims it but never moves it. */}
+        <RangeSlider
+          min={0}
+          max={1}
+          value={playback.volume}
+          onChange={onVolumeChange}
+          className={`flex-1 transition-opacity ${muted ? 'opacity-40' : ''}`}
+        />
       </div>
     </div>
   );

@@ -13,7 +13,8 @@ export interface PlaybackState {
   progress: number; // 0 to 100
   duration: number; // in seconds
   currentTime: number; // in seconds
-  volume: number; // 0 to 1
+  volume: number; // 0 to 1 — the user's chosen level. Muting must NOT change it.
+  muted: boolean; // independent of volume, mirroring HTMLMediaElement.muted
   isReady: boolean;
 }
 
