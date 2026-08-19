@@ -7,7 +7,7 @@ export const THEME_STORAGE_KEY = 'qwen-tts-theme';
 /**
  * Resolve the theme the same way the pre-paint script in index.html does:
  * an explicit saved choice wins, otherwise follow the OS. Keeping the two in
- * sync is what avoids a flash of the wrong theme on load.
+ * sync is what avoids a flash of the wrong theme on load. 
  */
 export function resolveInitialTheme(): Theme {
   try {
