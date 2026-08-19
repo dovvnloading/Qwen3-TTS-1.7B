@@ -56,7 +56,7 @@ const App: React.FC = () => {
   }, []);
 
   // Poll continuously rather than only until first-ready: the model can drop
-  // back to loading (a swap between preset/clone) or to error (bad path), and
+  // back to loading (a swap between preset/clone) or to error (bad path), and 
   // the UI needs to reflect that, not just the initial startup.
   useEffect(() => {
     let cancelled = false;
