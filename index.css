@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /*
-  Two themes, one token set.
+  Two themes, one token set. 
 
   Every colour below is defined twice — once per theme — and the Tailwind
   tokens reference them through `@theme inline`, which emits `var(--app-…)`
