@@ -123,6 +123,18 @@ Enable **Long-form mode** beyond 1,200 characters. Sentences are split into shor
 
 Recent takes are held in memory (not uploaded to an external service). Their WAVs can be played and saved. The backend keeps a bounded archive for the native Save dialog; the browser retains the current session history.
 
+## Reproducible audio-quality benchmark
+
+For a quantitative GPU comparison of baseline, Consistent, and Expressive settings:
+
+```bash
+python tools/benchmark_tts.py --models-dir D:/Models --samples tools/benchmark_prompts.jsonl --task custom --seeds 17,18 --out benchmark_outputs
+```
+
+The script writes WAV files and `metrics.csv` with generation time, real-time factor (RTF), peak GPU memory, audio duration, RMS, peak amplitude, clipping and silence percentages. It also supports `--task clone` with JSONL rows supplying `reference_audio` and `reference_text`.
+
+These measurements are diagnostic, **not** an automatic naturalness score. Run blinded listening evaluations, plus an independent ASR word/character-error evaluation and a speaker-similarity model where available. Use identical prompts, seeds, model revisions, and hardware when comparing settings.
+
 ## Security and privacy
 
 The backend binds to `127.0.0.1`, checks allowed `Host` and `Origin` headers, requires a random local session token on state-changing API requests, rejects oversized payloads, and confines static-file serving to `dist`. Vite development also binds to loopback only.
