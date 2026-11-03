@@ -702,6 +702,11 @@ def install_console_close_handler():
     ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler_ref, True)
 
 if __name__ == "__main__":
+    # A stale compiled UI is incompatible with the session-protected API.
+    if not os.path.isfile(os.path.join(DIST_DIR, "index.html")):
+        print("Frontend is not built. At the repository root run: npm ci && npm run build")
+        sys.exit(1)
+
     # Fix Taskbar Grouping (Required for icon to show in Taskbar)
     if os.name == 'nt':
         try:
