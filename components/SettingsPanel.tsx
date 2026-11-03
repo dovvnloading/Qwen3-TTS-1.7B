@@ -37,7 +37,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const setField = <K extends keyof TTSConfig>(key: K, value: TTSConfig[K]) =>
     setConfig((prev) => ({ ...prev, [key]: value }));
   const isClone = config.mode === 'clone';
-  const canGenerate = config.text.trim().length > 0 &&
+  const canGenerate = config.text.trim().length > 0 && config.text.length <= 20000 &&
     (config.longForm || config.text.length <= 1200) &&
     (!isClone || !!config.refAudioFile) && isModelReady && isModelAvailable;
   const suggested = NATIVE_LANGUAGE[config.speaker];
@@ -162,6 +162,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       </div>
       <div className="p-5 pt-2 flex flex-col gap-2">
         {!isModelAvailable && <Caption>The selected model is missing. Add its weights in Settings or enable downloads.</Caption>}
+        {config.text.length > 20000 && <Caption>Text exceeds 20,000 characters. Shorten it before generating.</Caption>}
         <Button variant="primary" size="lg" className="w-full" onClick={onGenerate}
           loading={isGenerating} disabled={!canGenerate}>
           {isGenerating ? 'SYNTHESIZING…' : 'GENERATE'}
