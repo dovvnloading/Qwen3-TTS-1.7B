@@ -31,6 +31,8 @@ const App: React.FC = () => {
   const [modelDetail, setModelDetail] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [speakerOptions, setSpeakerOptions] = useState<string[]>(SPEAKERS);
+  const [languageOptions, setLanguageOptions] = useState<string[]>(LANGUAGES);
   const [error, setError] = useState<string | null>(null);
   const [playback, setPlayback] = useState<PlaybackState>(initialPlayback);
   const [takes, setTakes] = useState<AudioTake[]>([]);
@@ -40,6 +42,7 @@ const App: React.FC = () => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const takesRef = useRef<AudioTake[]>([]);
   const busyRef = useRef(false);
+  const modelTypeRef = useRef<string | null>(null);
   const generateRef = useRef<() => void>(() => {});
 
   const selectedModel = config.mode === 'clone' ? 'base' : 'custom';
@@ -56,6 +59,23 @@ const App: React.FC = () => {
     } catch (e) { console.error('Failed to load app config', e); }
   }, []);
 
+  const refreshCapabilities = useCallback(async () => {
+    try {
+      const response = await apiFetch('/api/capabilities');
+      if (!response.ok) return;
+      const data = await response.json();
+      const normalize = (values: unknown, defaults: string[]): string[] =>
+        Array.isArray(values)
+          ? values.filter((value): value is string => typeof value === 'string')
+              .map((value) => defaults.find((item) => item.toLowerCase() === value.toLowerCase()) || value)
+          : [];
+      const speakers = normalize(data.speakers, SPEAKERS);
+      const languages = normalize(data.languages, LANGUAGES);
+      if (speakers.length) setSpeakerOptions(speakers);
+      if (languages.length) setLanguageOptions([...new Set(['Auto', ...languages])]);
+    } catch (e) { console.warn('Capabilities unavailable; using built-in options', e); }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
@@ -69,6 +89,10 @@ const App: React.FC = () => {
         failures = 0;
         setModelState(data.status);
         setModelDetail(data.detail || '');
+        if (data.modelType && data.modelType !== modelTypeRef.current) {
+          modelTypeRef.current = data.modelType;
+          void refreshCapabilities();
+        }
       } catch {
         if (++failures >= 3 && !cancelled) {
           setModelState('error');
@@ -79,7 +103,7 @@ const App: React.FC = () => {
     };
     poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, []);
+  }, [refreshCapabilities]);
 
   const retryLoad = useCallback(async () => {
     setModelState('loading');
@@ -329,6 +353,7 @@ const App: React.FC = () => {
           </div>}
         </div>
         <SettingsPanel config={config} setConfig={setConfig} onGenerate={handleGenerate}
+          speakerOptions={speakerOptions} languageOptions={languageOptions}
           isGenerating={status === AppStatus.GENERATING}
           isModelReady={canTryGenerate} isModelAvailable={isModelAvailable} />
         {(error || generationProgress) && <div className="absolute bottom-3 left-4 right-4 md:right-[350px] rounded-lg border border-line bg-background shadow-neu-flat px-3 py-2.5 flex items-start gap-2">
