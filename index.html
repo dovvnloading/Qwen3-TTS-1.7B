@@ -23,17 +23,7 @@
         }
       })();
     </script>
-    <!--
-      Fonts are the only remote asset, and they degrade gracefully to the
-      system stack when offline. Tailwind is compiled into the bundle so the
-      UI stays fully styled with no network access.
-    -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <!-- The UI is fully offline; system font fallback avoids remote requests. -->
   </head>
   <body>
     <div id="root"></div>
