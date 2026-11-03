@@ -6,7 +6,12 @@ export interface TTSConfig {
   mode: 'preset' | 'clone';
   refAudioFile: File | null;
   refText: string;
-  qualityPreset: 'default' | 'consistent' | 'expressive';
+  qualityPreset: 'default' | 'consistent' | 'expressive' | 'custom';
+  advancedTemperature: string;
+  advancedTopP: string;
+  advancedTopK: string;
+  advancedRepetitionPenalty: string;
+  advancedMaxNewTokens: string;
   seed: string;
   candidates: number;
   longForm: boolean;
@@ -24,6 +29,7 @@ export interface AudioTake {
   url: string;
   blob: Blob;
   label: string;
+  rtf: number | null;
 }
 export interface PlaybackState {
   isPlaying: boolean;
