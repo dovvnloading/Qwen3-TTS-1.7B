@@ -28,3 +28,5 @@ dist_backup_*/
 *.safetensors
 models--*
 # Build output is generated via npm run build, not hand-edited.
+# Generated Vite output; always rebuild against the matching API.
+Local-TTS/Local-TTS/dist/
