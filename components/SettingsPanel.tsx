@@ -12,6 +12,8 @@ interface SettingsPanelProps {
   isGenerating: boolean;
   isModelReady: boolean;
   isModelAvailable: boolean;
+  speakerOptions: string[];
+  languageOptions: string[];
 }
 const NATIVE_LANGUAGE: Record<string, string> = {
   Ryan: 'English', Aiden: 'English', Ono_Anna: 'Japanese', Sohee: 'Korean',
@@ -29,6 +31,7 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   config, setConfig, onGenerate, isGenerating, isModelReady, isModelAvailable,
+  speakerOptions, languageOptions,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const setField = <K extends keyof TTSConfig>(key: K, value: TTSConfig[K]) =>
@@ -56,10 +59,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </button>
             ))}
         </div>
-        <Select label="Language" options={LANGUAGES} value={config.language}
+        <Select label="Language" options={languageOptions.length ? languageOptions : LANGUAGES} value={config.language}
           onChange={(e) => setField('language', e.target.value)} />
         {!isClone ? <>
-          <Select label="Speaker" options={SPEAKERS} value={config.speaker}
+          <Select label="Speaker" options={speakerOptions.length ? speakerOptions : SPEAKERS} value={config.speaker}
             onChange={(e) => setField('speaker', e.target.value)} />
           {showNativeHint && <Caption>{config.speaker} is native to {suggested}; matching languages generally sound most natural.</Caption>}
           <Field label="Style instruction">
