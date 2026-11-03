@@ -321,7 +321,8 @@ async def protect_local_api(request: Request, call_next):
 
 # Outer ASGI middleware enforces a real byte limit on chunked requests (not just
 # Content-Length), before multipart parsing allocates reference audio in memory.
-app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES,
+                   expected_token=SESSION_TOKEN, port=PORT)
 
 @app.get("/api/session")
 def get_session():
