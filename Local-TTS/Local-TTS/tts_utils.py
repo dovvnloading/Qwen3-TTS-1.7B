@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import json
 from pathlib import Path
 
 import numpy as np
@@ -32,12 +33,45 @@ def safe_spa_path(dist_dir: str, path: str) -> Path:
     return file_path
 
 
+def safetensors_complete(path: Path) -> bool:
+    """Verify that the metadata's expected byte ranges actually fit the weight file."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            prefix = f.read(8)
+            if len(prefix) != 8:
+                return False
+            header_size = int.from_bytes(prefix, "little")
+            if header_size <= 0 or header_size > 32 * 1024 * 1024:
+                return False
+            if size < 8 + header_size:
+                return False
+            header = json.loads(f.read(header_size))
+        if not isinstance(header, dict):
+            return False
+        offsets = [
+            tensor.get("data_offsets")
+            for name, tensor in header.items()
+            if name != "__metadata__" and isinstance(tensor, dict)
+        ]
+        if not offsets or any(not isinstance(v, list) or len(v) != 2
+                              or not all(isinstance(x, int) and x >= 0 for x in v)
+                              or v[1] < v[0] for v in offsets):
+            return False
+        return size >= 8 + header_size + max(v[1] for v in offsets)
+    except (OSError, ValueError, TypeError, OverflowError, json.JSONDecodeError):
+        return False
+
+
 def snapshot_complete(folder: str | Path) -> bool:
-    """Check the minimal complete Qwen TTS snapshot, including the large weights."""
+    """Check required files and validate safetensors payload bounds without loading weights."""
     root = Path(folder)
     try:
-        return all((root / name).is_file() and (root / name).stat().st_size > 0
-                   for name in REQUIRED_MODEL_FILES)
+        if not all((root / name).is_file() and (root / name).stat().st_size > 0
+                   for name in REQUIRED_MODEL_FILES):
+            return False
+        return (safetensors_complete(root / "model.safetensors")
+                and safetensors_complete(root / "speech_tokenizer/model.safetensors"))
     except OSError:
         return False
 
