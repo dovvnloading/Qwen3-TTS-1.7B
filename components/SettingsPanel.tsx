@@ -41,7 +41,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     (config.longForm || config.text.length <= 1200) &&
     (!isClone || !!config.refAudioFile) && isModelReady && isModelAvailable;
   const suggested = NATIVE_LANGUAGE[config.speaker];
-  const showNativeHint = !isClone && config.language !== 'Auto' &&
+  const showNativeHint = !!suggested && !isClone && config.language !== 'Auto' &&
     config.language !== suggested;
   return (
     <aside className="w-full md:w-[330px] shrink-0 flex flex-col border-l border-line/70">
