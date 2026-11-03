@@ -107,9 +107,9 @@ const App: React.FC = () => {
 
   const retryLoad = useCallback(async () => {
     setModelState('loading');
-    setModelDetail('Loading CustomVoice model…');
+    setModelDetail(`Loading ${selectedModel === 'base' ? 'Voice Clone' : 'CustomVoice'} model…`);
     try {
-      const res = await apiFetch('/api/load', { method: 'POST' });
+      const res = await apiFetch(`/api/load?model_type=${selectedModel}`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || 'Load failed');
@@ -118,7 +118,7 @@ const App: React.FC = () => {
       setModelState('error');
       setModelDetail(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [selectedModel]);
 
   useEffect(() => {
     refreshAppConfig();
@@ -144,12 +144,14 @@ const App: React.FC = () => {
     audio.addEventListener('pause', onPause);
     audio.addEventListener('timeupdate', onTime);
     audio.addEventListener('loadedmetadata', onMeta);
+    audio.addEventListener('durationchange', onMeta);
     audio.addEventListener('error', onError);
     return () => {
       audio.pause();
       for (const [event, listener] of [
         ['ended', onEnded], ['playing', onPlaying], ['pause', onPause],
-        ['timeupdate', onTime], ['loadedmetadata', onMeta], ['error', onError],
+        ['timeupdate', onTime], ['loadedmetadata', onMeta],
+        ['durationchange', onMeta], ['error', onError],
       ] as const) audio.removeEventListener(event, listener);
       takesRef.current.forEach((take) => URL.revokeObjectURL(take.url));
     };
@@ -173,7 +175,6 @@ const App: React.FC = () => {
     removed.forEach((old) => URL.revokeObjectURL(old.url));
     takesRef.current = next;
     setTakes(next);
-    selectTake(take);
   };
 
   const handleGenerate = async () => {
@@ -196,6 +197,7 @@ const App: React.FC = () => {
     const baseSeed = config.seed ? Number(config.seed)
       : count > 1 ? Math.floor(Math.random() * 2147483600) : null;
     let successes = 0;
+    const completedTakes: AudioTake[] = [];
     try {
       for (let index = 0; index < count; index++) {
         setGenerationProgress(`Generating take ${index + 1} of ${count}…`);
@@ -258,6 +260,7 @@ const App: React.FC = () => {
             ? Number(response.headers.get('X-TTS-RTF')) : null,
         };
         addTake(take);
+        completedTakes.push(take);
         successes++;
       }
       setStatus(AppStatus.SUCCESS);
@@ -267,6 +270,9 @@ const App: React.FC = () => {
       setError(err instanceof Error ? err.message : String(err));
       setStatus(successes ? AppStatus.SUCCESS : AppStatus.ERROR);
     } finally {
+      // Avoid cutting off each candidate's playback while subsequent takes
+      // are still generating. Play the first complete candidate only once.
+      if (completedTakes.length) selectTake(completedTakes[0]);
       busyRef.current = false;
       setGenerationProgress('');
     }
