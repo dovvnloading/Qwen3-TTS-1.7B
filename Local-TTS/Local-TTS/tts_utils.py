@@ -105,14 +105,25 @@ def decode_reference_audio(payload: bytes) -> tuple[np.ndarray, int]:
     if len(payload) > MAX_REFERENCE_BYTES:
         raise ValueError("Reference audio exceeds the 20 MB limit.")
     try:
+        # Validate the decoder-reported frame count BEFORE allocating the PCM
+        # array: a tiny compressed upload can expand into hours of audio.
+        info = sf.info(io.BytesIO(payload))
+        if not 8000 <= info.samplerate <= 192000:
+            raise ValueError("Reference sample rate must be between 8 and 192 kHz.")
+        if not 1 <= info.channels <= 2:
+            raise ValueError("Reference audio must be mono or stereo.")
+        if not MIN_REFERENCE_SECONDS <= info.duration <= MAX_REFERENCE_SECONDS:
+            raise ValueError("Reference audio must be 1–90 seconds long.")
+        # Bound decoded allocation even if file metadata is malformed.
+        if info.frames <= 0 or info.frames > MAX_REFERENCE_SECONDS * info.samplerate:
+            raise ValueError("Invalid reference audio frame count.")
         samples, sr = sf.read(io.BytesIO(payload), dtype="float32", always_2d=True)
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError("Unsupported or corrupt reference audio. Try WAV or FLAC.") from exc
-    if not 8000 <= sr <= 192000:
-        raise ValueError("Reference sample rate must be between 8 and 192 kHz.")
-    duration = len(samples) / sr
-    if not MIN_REFERENCE_SECONDS <= duration <= MAX_REFERENCE_SECONDS:
-        raise ValueError("Reference audio must be 1–90 seconds long.")
+    if len(samples) != info.frames or sr != info.samplerate:
+        raise ValueError("Reference audio metadata does not match decoded samples.")
     mono = np.mean(samples, axis=1).astype(np.float32)
     if not np.all(np.isfinite(mono)):
         raise ValueError("Reference audio contains invalid samples.")
