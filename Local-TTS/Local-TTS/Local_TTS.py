@@ -108,19 +108,7 @@ if not os.path.isfile(CONFIG_PATH):
         print(f"Warning: unable to persist initial configuration: {exc}")
 
 
-# Models are resolved from a local Hugging Face cache directory. This must happen
-# before qwen_tts (and therefore huggingface_hub/transformers) is imported, since
-# the cache location is read once at import time.
-#
-# NOTE: we deliberately do NOT set HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE here. Some
-# transformers code paths (e.g. tokenizer loading for this model does a Mistral-
-# tokenizer detection check) make a small metadata API call regardless of local
-# cache state, and hard-crash with OfflineModeIsEnabled instead of falling back
-# when offline mode is forced. huggingface_hub already falls back to the local
-# cache on its own if that call can't reach the network. The actual "don't
-# auto-download a model the user didn't ask for" guarantee comes from the
-# is_model_cached() pre-flight check in load_model_instance() below, not from
-# blocking the network at the environment level.
+# Explicit local model snapshots avoid network lookups while downloads are disabled.
 # Explicit local snapshot paths below enforce offline operation when downloads are disabled.
 # Avoid setting process-global Hub cache variables; model directories can change at runtime.
 
@@ -180,8 +168,8 @@ MODEL_IDS = {
 SESSION_TOKEN = secrets.token_urlsafe(32)
 MAX_REQUEST_BYTES = 24 * 1024 * 1024
 audio_lock = threading.Lock()
-last_audio_wav = None
-last_audio_name = "qwen3-tts.wav"
+audio_archive = OrderedDict()  # generated clip id -> WAV bytes
+MAX_ARCHIVED_AUDIO_BYTES = 90 * 1024 * 1024
 # Reject concurrent GPU synthesis instead of running unsynchronized or queuing indefinitely.
 generation_gate = threading.BoundedSemaphore(1)
 # Prompt items may retain device tensors. Clear this cache when swapping models.
@@ -242,8 +230,7 @@ def load_model_instance(model_type: str):
         local_source = snapshot_download(repo_id=model_id, cache_dir=model_dir)
         if not snapshot_complete(local_source):
             raise RuntimeError(f"Download is incomplete: {model_id}")
-    # Once the new model is known to exist, free the old model to avoid VRAM overlap.
-    _unload_model()
+    # Check hardware compatibility before evicting the existing working model.
     device = "cuda" if torch.cuda.is_available() else "cpu"
     preference = app_config.get("precision", "auto")
     if device == "cpu":
@@ -259,6 +246,8 @@ def load_model_instance(model_type: str):
     else:
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
+    # Once validated, free the old model to avoid VRAM overlap.
+    _unload_model()
     print(f"Loading {model_type} from {local_source} on {device} ({dtype})")
     # SDPA is the measured good baseline on the original RTX 3060 Ti.
     model = Qwen3TTSModel.from_pretrained(
@@ -358,7 +347,6 @@ def generate_audio(
     normalize: bool = Form(False),
     trim_silence: bool = Form(False),
 ):
-    global last_audio_wav, last_audio_name
     if not text or not text.strip():
         raise HTTPException(400, "Text is empty.")
     if len(text) > MAX_TEXT_CHARS:
@@ -451,12 +439,16 @@ def generate_audio(
         buffer = io.BytesIO()
         sf.write(buffer, final_audio, sr, format="WAV", subtype="PCM_16")
         wav_bytes = buffer.getvalue()
+        clip_id = secrets.token_urlsafe(16)
         with audio_lock:
-            last_audio_wav = wav_bytes
-            last_audio_name = "qwen3-tts.wav"
+            audio_archive[clip_id] = wav_bytes
+            while (len(audio_archive) > 12
+                   or sum(len(data) for data in audio_archive.values()) > MAX_ARCHIVED_AUDIO_BYTES):
+                audio_archive.popitem(last=False)
         return Response(
             content=wav_bytes, media_type="audio/wav",
             headers={"X-TTS-Segments": str(len(segments)),
+                     "X-TTS-Clip-ID": clip_id,
                      "X-TTS-Seed": str(seed) if seed is not None else ""},
         )
     except HTTPException:
@@ -564,11 +556,11 @@ backend_server = None
 
 class DesktopApi:
     """Native Save dialog; browser-only development falls back to a WAV download."""
-    def save_last_audio(self, suggested_name="qwen3-tts.wav"):
+    def save_audio(self, clip_id, suggested_name="qwen3-tts.wav"):
         with audio_lock:
-            data = last_audio_wav
+            data = audio_archive.get(str(clip_id))
         if not data:
-            return {"saved": False, "error": "No generated audio yet."}
+            return {"saved": False, "error": "This clip is no longer in the native save cache. Export in a browser instead."}
         import re
         name = re.sub(r"[^a-zA-Z0-9._-]", "_", str(suggested_name))[:90]
         if not name.lower().endswith(".wav"):
