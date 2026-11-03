@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { AlertTriangle, X, RefreshCw, SlidersHorizontal } from 'lucide-react';
-import { TTSConfig, PlaybackState, AppStatus, AppConfig, ModelState } from './types';
+import { AudioTake, TTSConfig, PlaybackState, AppStatus, AppConfig, ModelState } from './types';
 import { SPEAKERS, LANGUAGES } from './constants';
 import { TopBar } from './components/TopBar';
 import { EditorPanel } from './components/EditorPanel';
@@ -9,200 +9,266 @@ import { PlayerBar } from './components/PlayerBar';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/Button';
 import { useTheme } from './useTheme';
+import { apiFetch } from './api';
+
+const initialConfig: TTSConfig = {
+  text: '', speaker: SPEAKERS[0], language: LANGUAGES[0], styleInstruction: '',
+  mode: 'preset', refAudioFile: null, refText: '',
+  qualityPreset: 'default', seed: '', candidates: 1, longForm: false,
+  advancedTemperature: '', advancedTopP: '', advancedTopK: '',
+  advancedRepetitionPenalty: '', advancedMaxNewTokens: '',
+  pauseMs: 250, normalize: false, trimSilence: false,
+};
+const initialPlayback: PlaybackState = {
+  isPlaying: false, progress: 0, duration: 0, currentTime: 0,
+  volume: 0.7, muted: false, isReady: false,
+};
 
 const App: React.FC = () => {
-  const [config, setConfig] = useState<TTSConfig>({
-    text: '',
-    speaker: SPEAKERS[0],
-    language: LANGUAGES[0],
-    styleInstruction: '',
-    mode: 'preset',
-    refAudioFile: null,
-    refText: '',
-  });
-
+  const [config, setConfig] = useState<TTSConfig>(initialConfig);
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
   const [modelState, setModelState] = useState<ModelState>('loading');
   const [modelDetail, setModelDetail] = useState('');
-  const [isRestarting, setIsRestarting] = useState(false);
-  const isModelReady = modelState === 'ready';
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [speakerOptions, setSpeakerOptions] = useState<string[]>(SPEAKERS);
+  const [languageOptions, setLanguageOptions] = useState<string[]>(LANGUAGES);
   const [error, setError] = useState<string | null>(null);
-
-  const [playback, setPlayback] = useState<PlaybackState>({
-    isPlaying: false,
-    progress: 0,
-    duration: 0,
-    currentTime: 0,
-    volume: 0.7,
-    muted: false,
-    isReady: false,
-  });
-
+  const [playback, setPlayback] = useState<PlaybackState>(initialPlayback);
+  const [takes, setTakes] = useState<AudioTake[]>([]);
+  const [activeTake, setActiveTake] = useState<AudioTake | null>(null);
+  const [generationProgress, setGenerationProgress] = useState('');
   const { theme, toggleTheme } = useTheme();
-
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  // Kept in a ref so the Ctrl+Enter handler never fires a stale closure.
+  const takesRef = useRef<AudioTake[]>([]);
+  const busyRef = useRef(false);
+  const modelTypeRef = useRef<string | null>(null);
   const generateRef = useRef<() => void>(() => {});
+
+  const selectedModel = config.mode === 'clone' ? 'base' : 'custom';
+  const isModelAvailable = !!(appConfig?.downloadMode || appConfig?.models[selectedModel]);
+  // Model availability is mode-specific. A Base model can still load after
+  // an unsuccessful CustomVoice preload and vice versa.
+  const canTryGenerate = modelState !== 'loading' && isModelAvailable;
 
   const refreshAppConfig = useCallback(async () => {
     try {
-      const res = await fetch('/api/config');
+      const res = await apiFetch('/api/config');
+      if (!res.ok) throw new Error('Configuration could not be loaded');
       setAppConfig(await res.json());
-    } catch (e) {
-      console.error('Failed to load app config', e);
-    }
+    } catch (e) { console.error('Failed to load app config', e); }
   }, []);
 
-  // Poll continuously rather than only until first-ready: the model can drop
-  // back to loading (a swap between preset/clone) or to error (bad path), and 
-  // the UI needs to reflect that, not just the initial startup.
+  const refreshCapabilities = useCallback(async () => {
+    try {
+      const response = await apiFetch('/api/capabilities');
+      if (!response.ok) return;
+      const data = await response.json();
+      const normalize = (values: unknown, defaults: string[]): string[] =>
+        Array.isArray(values)
+          ? values.filter((value): value is string => typeof value === 'string')
+              .map((value) => defaults.find((item) => item.toLowerCase() === value.toLowerCase()) || value)
+          : [];
+      const speakers = normalize(data.speakers, SPEAKERS);
+      const languages = normalize(data.languages, LANGUAGES);
+      if (speakers.length) setSpeakerOptions(speakers);
+      if (languages.length) setLanguageOptions([...new Set(['Auto', ...languages])]);
+    } catch (e) { console.warn('Capabilities unavailable; using built-in options', e); }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    let timer: number;
-
+    let timer = 0;
+    let failures = 0;
     const poll = async () => {
       try {
-        const res = await fetch('/api/status');
+        const res = await apiFetch('/api/status');
+        if (!res.ok) throw new Error('Status endpoint unavailable');
         const data = await res.json();
         if (cancelled) return;
+        failures = 0;
         setModelState(data.status);
         setModelDetail(data.detail || '');
-        // A response at all means the server is up; if we were waiting out a
-        // restart, it has come back.
-        setIsRestarting(false);
+        if (data.modelType && data.modelType !== modelTypeRef.current) {
+          modelTypeRef.current = data.modelType;
+          void refreshCapabilities();
+        }
       } catch {
-        // Server unreachable (still starting, or mid-restart) — leave the
-        // current state alone and retry.
+        if (++failures >= 3 && !cancelled) {
+          setModelState('error');
+          setModelDetail('Local backend is unreachable. Check the server console.');
+        }
       }
       if (!cancelled) timer = window.setTimeout(poll, 1500);
     };
-
     poll();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, []);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [refreshCapabilities]);
 
   const retryLoad = useCallback(async () => {
     setModelState('loading');
-    setModelDetail('Loading model into memory…');
+    setModelDetail('Loading CustomVoice model…');
     try {
-      await fetch('/api/load', { method: 'POST' });
+      const res = await apiFetch('/api/load', { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || 'Load failed');
+      }
     } catch (e) {
-      console.error('Failed to trigger load', e);
+      setModelState('error');
+      setModelDetail(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
   useEffect(() => {
     refreshAppConfig();
-
     const audio = new Audio();
     audioRef.current = audio;
     audio.volume = 0.7;
-
-    const handleEnded = () =>
-      setPlayback((p) => ({ ...p, isPlaying: false, currentTime: 0, progress: 0 }));
-
-    const handleTimeUpdate = () => {
-      const el = audioRef.current;
-      if (!el) return;
-      const duration = el.duration || 1;
-      setPlayback((p) => ({
-        ...p,
-        currentTime: el.currentTime,
-        progress: (el.currentTime / duration) * 100,
+    const onEnded = () => setPlayback((p) => ({ ...p, isPlaying: false, progress: 100 }));
+    const onPlaying = () => setPlayback((p) => ({ ...p, isPlaying: true }));
+    const onPause = () => setPlayback((p) => ({ ...p, isPlaying: false }));
+    const onTime = () => {
+      const dur = Number.isFinite(audio.duration) ? audio.duration : 0;
+      setPlayback((p) => ({ ...p,
+        currentTime: audio.currentTime,
+        progress: dur > 0 ? audio.currentTime / dur * 100 : 0,
       }));
     };
-
-    const handleLoadedMetadata = () =>
-      setPlayback((p) => ({ ...p, duration: audioRef.current?.duration || 0, isReady: true }));
-
-    audio.addEventListener('ended', handleEnded);
-    audio.addEventListener('timeupdate', handleTimeUpdate);
-    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
-
+    const onMeta = () => setPlayback((p) => ({
+      ...p, duration: Number.isFinite(audio.duration) ? audio.duration : 0, isReady: true,
+    }));
+    const onError = () => setError('This generated audio could not be decoded by the player.');
+    audio.addEventListener('ended', onEnded);
+    audio.addEventListener('playing', onPlaying);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('timeupdate', onTime);
+    audio.addEventListener('loadedmetadata', onMeta);
+    audio.addEventListener('error', onError);
     return () => {
       audio.pause();
-      audio.removeEventListener('ended', handleEnded);
-      audio.removeEventListener('timeupdate', handleTimeUpdate);
-      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
-      if (audio.src) URL.revokeObjectURL(audio.src);
+      for (const [event, listener] of [
+        ['ended', onEnded], ['playing', onPlaying], ['pause', onPause],
+        ['timeupdate', onTime], ['loadedmetadata', onMeta], ['error', onError],
+      ] as const) audio.removeEventListener(event, listener);
+      takesRef.current.forEach((take) => URL.revokeObjectURL(take.url));
     };
   }, [refreshAppConfig]);
 
-  const handleConfigSaved = useCallback(
-    (restarting: boolean) => {
-      if (restarting) {
-        // Changing the models directory needs a process restart: the HF cache
-        // location is read once at import time. The status poller clears this
-        // overlay as soon as the new process answers.
-        setIsRestarting(true);
-        setModelState('loading');
-        setModelDetail('Restarting to apply the new models directory…');
-        return;
-      }
-      // Nothing needed a restart, so just retry the load in place — this is
-      // what makes fixing a bad path actually recoverable without relaunching.
-      refreshAppConfig();
-      retryLoad();
-    },
-    [refreshAppConfig, retryLoad],
-  );
+  const selectTake = (take: AudioTake) => {
+    const audio = audioRef.current;
+    setActiveTake(take);
+    if (!audio) return;
+    audio.pause();
+    setPlayback((p) => ({ ...p, isPlaying: false, isReady: false,
+      progress: 0, currentTime: 0, duration: 0 }));
+    audio.src = take.url;
+    audio.load();
+    audio.play().catch(() => { /* Playback may be blocked; manual Play is available. */ });
+  };
+
+  const addTake = (take: AudioTake) => {
+    const next = [take, ...takesRef.current].slice(0, 12);
+    const removed = takesRef.current.filter((old) => !next.some((item) => item.id === old.id));
+    removed.forEach((old) => URL.revokeObjectURL(old.url));
+    takesRef.current = next;
+    setTakes(next);
+    selectTake(take);
+  };
 
   const handleGenerate = async () => {
-    if (!config.text.trim()) return;
+    if (busyRef.current || !config.text.trim() || !canTryGenerate) return;
     if (config.mode === 'clone' && !config.refAudioFile) return;
-    if (!isModelReady || status === AppStatus.GENERATING) return;
-
+    if (!config.longForm && config.text.length > 1200) {
+      setError('Enable Long-form mode to synthesize more than 1,200 characters.');
+      return;
+    }
+    if (config.seed && Number(config.seed) > 2147483647) {
+      setError('Seed must be between 0 and 2147483647.');
+      return;
+    }
+    busyRef.current = true;
     setStatus(AppStatus.GENERATING);
     setError(null);
-    setPlayback((p) => ({ ...p, isReady: false, isPlaying: false, currentTime: 0, duration: 0 }));
-
-    if (audioRef.current?.src) {
-      URL.revokeObjectURL(audioRef.current.src);
-      audioRef.current.src = '';
-    }
-
+    const count = Math.max(1, Math.min(3, config.candidates));
+    // One default take leaves stochastic Qwen settings untouched if no seed
+    // was entered. Multiple candidates require independent, recorded seeds.
+    const baseSeed = config.seed ? Number(config.seed)
+      : count > 1 ? Math.floor(Math.random() * 2147483600) : null;
+    let successes = 0;
     try {
-      const formData = new FormData();
-      formData.append('text', config.text);
-      formData.append('language', config.language);
-
-      if (config.mode === 'clone' && config.refAudioFile) {
-        formData.append('speaker', 'Voice Clone');
-        formData.append('ref_audio', config.refAudioFile);
-        if (config.refText.trim()) formData.append('ref_text', config.refText);
-      } else {
-        formData.append('speaker', config.speaker);
-        if (config.styleInstruction.trim())
-          formData.append('styleInstruction', config.styleInstruction);
+      for (let index = 0; index < count; index++) {
+        setGenerationProgress(`Generating take ${index + 1} of ${count}…`);
+        const form = new FormData();
+        form.append('text', config.text);
+        form.append('language', config.language);
+        if (config.mode === 'clone' && config.refAudioFile) {
+          form.append('speaker', 'Voice Clone');
+          form.append('ref_audio', config.refAudioFile);
+          if (config.refText.trim()) form.append('ref_text', config.refText.trim());
+        } else {
+          form.append('speaker', config.speaker);
+          if (config.styleInstruction.trim())
+            form.append('styleInstruction', config.styleInstruction.trim());
+        }
+        form.append('long_form', String(config.longForm));
+        form.append('pause_ms', String(config.pauseMs));
+        form.append('normalize', String(config.normalize));
+        form.append('trim_silence', String(config.trimSilence));
+        if (config.qualityPreset === 'consistent') {
+          form.append('temperature', '0.65');
+          form.append('top_p', '0.85');
+          form.append('repetition_penalty', '1.10');
+        } else if (config.qualityPreset === 'expressive') {
+          form.append('temperature', '1.05');
+          form.append('top_p', '0.98');
+          form.append('repetition_penalty', '1.02');
+        }
+        if (config.qualityPreset === 'custom') {
+          for (const [name, setting] of [
+            ['temperature', config.advancedTemperature],
+            ['top_p', config.advancedTopP],
+            ['top_k', config.advancedTopK],
+            ['repetition_penalty', config.advancedRepetitionPenalty],
+            ['max_new_tokens', config.advancedMaxNewTokens],
+          ] as const) {
+            if (setting.trim()) form.append(name, setting);
+          }
+        }
+        const seed = baseSeed === null ? null : (baseSeed + index) % 2147483648;
+        if (seed !== null) form.append('seed', String(seed));
+        const response = await apiFetch('/api/generate', { method: 'POST', body: form });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.detail || `Server error (${response.status})`);
+        }
+        const blob = await response.blob();
+        if (blob.size < 44) throw new Error('The server returned empty audio.');
+        const take: AudioTake = {
+          id: `${Date.now()}-${index}`,
+          clipId: response.headers.get('X-TTS-Clip-ID'),
+          text: config.text,
+          speaker: config.mode === 'clone' ? 'Voice clone' : config.speaker,
+          seed,
+          createdAt: Date.now(),
+          url: URL.createObjectURL(blob),
+          blob,
+          label: `Take ${index + 1} · ${config.mode === 'clone' ? 'Clone' : config.speaker}`,
+          rtf: response.headers.get('X-TTS-RTF')
+            ? Number(response.headers.get('X-TTS-RTF')) : null,
+        };
+        addTake(take);
+        successes++;
       }
-
-      const response = await fetch('/api/generate', { method: 'POST', body: formData });
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail || `Server error (${response.status})`);
-      }
-
-      const blob = await response.blob();
-      const audioUrl = URL.createObjectURL(blob);
-
-      if (audioRef.current) {
-        audioRef.current.src = audioUrl;
-        audioRef.current.load();
-        setStatus(AppStatus.SUCCESS);
-        audioRef.current
-          .play()
-          .then(() => setPlayback((p) => ({ ...p, isPlaying: true, isReady: true })))
-          .catch(() => setPlayback((p) => ({ ...p, isReady: true })));
-      }
+      setStatus(AppStatus.SUCCESS);
+      refreshAppConfig();
     } catch (err) {
-      console.error('Generation failed:', err);
-      setStatus(AppStatus.ERROR);
+      console.error('Generation failed', err);
       setError(err instanceof Error ? err.message : String(err));
+      setStatus(successes ? AppStatus.SUCCESS : AppStatus.ERROR);
+    } finally {
+      busyRef.current = false;
+      setGenerationProgress('');
     }
   };
   generateRef.current = handleGenerate;
@@ -210,129 +276,99 @@ const App: React.FC = () => {
   const handlePlayPause = () => {
     const el = audioRef.current;
     if (!el || !playback.isReady) return;
-    if (playback.isPlaying) {
-      el.pause();
-      setPlayback((p) => ({ ...p, isPlaying: false }));
-    } else {
-      el.play();
-      setPlayback((p) => ({ ...p, isPlaying: true }));
-    }
+    if (el.paused) {
+      el.play().catch((e) => setError(`Cannot play audio: ${String(e)}`));
+    } else el.pause();
   };
-
   const handleSeek = (time: number) => {
-    setPlayback((p) => ({ ...p, currentTime: time }));
-    if (audioRef.current) audioRef.current.currentTime = time;
+    const el = audioRef.current;
+    if (el && Number.isFinite(time)) el.currentTime = time;
   };
-
-  // volume and muted are deliberately independent, mirroring how
-  // HTMLMediaElement models them. Muting must never overwrite the level the
-  // user picked, or the slider position is destroyed every time they mute.
-  const handleVolume = (vol: number) => {
-    // Raising the volume while muted unmutes, which is what every media player
-    // does — otherwise dragging the slider appears to do nothing.
-    const unmute = vol > 0;
-    setPlayback((p) => ({ ...p, volume: vol, muted: unmute ? false : p.muted }));
-    if (audioRef.current) {
-      audioRef.current.volume = vol;
-      if (unmute) audioRef.current.muted = false;
+  const handleRestart = () => {
+    if (audioRef.current && playback.isReady) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch((e) => setError(String(e)));
     }
   };
-
-  const handleToggleMute = () => {
-    const next = !playback.muted;
-    setPlayback((p) => ({ ...p, muted: next }));
-    if (audioRef.current) audioRef.current.muted = next;
+  const handleVolume = (volume: number) => {
+    const el = audioRef.current;
+    setPlayback((p) => ({ ...p, volume, muted: volume > 0 ? false : p.muted }));
+    if (el) { el.volume = volume; if (volume > 0) el.muted = false; }
   };
+  const handleToggleMute = () => {
+    const muted = !playback.muted;
+    setPlayback((p) => ({ ...p, muted }));
+    if (audioRef.current) audioRef.current.muted = muted;
+  };
+  const handleSave = async () => {
+    if (!activeTake) return;
+    const name = `qwen3-tts-${activeTake.speaker.replace(/[^\w-]/g, '_')}-${activeTake.createdAt}.wav`;
+    const bridge = (window as any).pywebview?.api?.save_audio;
+    if (bridge && activeTake.clipId) {
+      const result = await bridge(activeTake.clipId, name);
+      if (result?.saved) return;
+      if (result?.error) { setError(result.error); return; }
+      return; // User cancelled the native Save dialog.
+    }
+    const link = document.createElement('a');
+    link.href = activeTake.url;
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  };
+  const handleConfigSaved = () => { refreshAppConfig(); retryLoad(); };
 
   return (
     <div className="flex flex-col h-screen w-full bg-background text-text overflow-hidden font-sans">
-      <TopBar
-        modelState={modelState}
-        modelDetail={modelDetail}
-        theme={theme}
-        onToggleTheme={toggleTheme}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-      />
-
-      {modelState === 'error' && (
-        <div className="shrink-0 flex items-start gap-3 px-4 py-3 border-b border-red-400/25 bg-red-400/[0.06]">
-          <AlertTriangle size={15} className="text-red-400 mt-0.5 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-[11px] font-bold uppercase tracking-[0.1em] text-red-400">
-              Model not loaded
-            </p>
-            <p className="text-[11px] leading-relaxed text-text/80 mt-1">
-              {modelDetail || 'The model could not be loaded.'}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <Button size="sm" onClick={() => setIsSettingsOpen(true)}>
-              <SlidersHorizontal size={12} />
-              Settings
-            </Button>
-            <Button size="sm" onClick={retryLoad}>
-              <RefreshCw size={12} />
-              Retry
-            </Button>
-          </div>
+      <TopBar modelState={modelState} modelDetail={modelDetail} theme={theme}
+        onToggleTheme={toggleTheme} onOpenSettings={() => setIsSettingsOpen(true)} />
+      {modelState === 'error' && <div className="shrink-0 flex items-start gap-3 px-4 py-3 border-b border-danger-line bg-danger-bg">
+        <AlertTriangle size={15} className="text-danger-text mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0 text-[11px]">
+          <strong>Model not loaded:</strong> {modelDetail || 'Model could not load.'}
         </div>
-      )}
-
+        <Button size="sm" onClick={() => setIsSettingsOpen(true)}><SlidersHorizontal size={12}/> Settings</Button>
+        <Button size="sm" onClick={retryLoad}><RefreshCw size={12}/> Retry</Button>
+      </div>}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        <EditorPanel
-          text={config.text}
-          onChange={(val) => setConfig((p) => ({ ...p, text: val }))}
-          onSubmit={() => generateRef.current()}
-        />
-        <SettingsPanel
-          config={config}
-          setConfig={setConfig}
-          onGenerate={handleGenerate}
-          isGenerating={status === AppStatus.GENERATING}
-          isModelReady={isModelReady}
-        />
-
-        {error && (
-          <div className="absolute bottom-4 left-4 right-4 md:right-auto md:max-w-md flex items-start gap-2.5 rounded-lg border border-danger-line bg-danger-bg px-3.5 py-2.5 shadow-neu-flat">
-            <AlertTriangle size={14} className="text-danger-text mt-0.5 shrink-0" />
-            <p className="flex-1 text-[11px] leading-relaxed text-text/90 break-words">{error}</p>
-            <button
-              onClick={() => setError(null)}
-              aria-label="Dismiss error"
-              className="text-text-muted hover:text-strong shrink-0 transition-colors"
-            >
-              <X size={13} />
-            </button>
-          </div>
-        )}
-      </div>
-
-      <PlayerBar
-        theme={theme}
-        playback={playback}
-        onPlayPause={handlePlayPause}
-        onSeek={handleSeek}
-        onVolumeChange={handleVolume}
-        onToggleMute={handleToggleMute}
-      />
-
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        appConfig={appConfig}
-        onSaved={handleConfigSaved}
-      />
-
-      {isRestarting && (
-        <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-3 bg-scrim backdrop-blur-sm">
-          <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-          <div className="text-[11px] font-bold text-strong tracking-[0.12em] uppercase">
-            Applying settings &amp; restarting
-          </div>
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          <EditorPanel text={config.text}
+            onChange={(value) => setConfig((p) => ({ ...p, text: value }))}
+            onSubmit={() => generateRef.current()} />
+          {takes.length > 0 && <div className="shrink-0 px-5 pb-4 border-t border-line/50 max-h-40 overflow-auto">
+            <div className="text-[10px] font-bold uppercase text-text-muted tracking-[.12em] py-2">
+              Recent takes · select to play / save
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {takes.map((take) => <button key={take.id} onClick={() => selectTake(take)}
+                title={`${take.text.slice(0, 120)} · seed ${take.seed ?? 'random'}`}
+                className={`text-[11px] px-3 py-2 rounded-lg border border-line/70 text-left ${
+                  activeTake?.id === take.id ? 'shadow-neu-pressed text-strong' : 'shadow-neu-flat text-text-muted'
+                }`}>
+                {take.label}{take.seed !== null ? ` · #${take.seed}` : ''}
+                {take.rtf !== null ? ` · RTF ${take.rtf.toFixed(2)}` : ''}
+              </button>)}
+            </div>
+          </div>}
         </div>
-      )}
+        <SettingsPanel config={config} setConfig={setConfig} onGenerate={handleGenerate}
+          speakerOptions={speakerOptions} languageOptions={languageOptions}
+          isGenerating={status === AppStatus.GENERATING}
+          isModelReady={canTryGenerate} isModelAvailable={isModelAvailable} />
+        {(error || generationProgress) && <div className="absolute bottom-3 left-4 right-4 md:right-[350px] rounded-lg border border-line bg-background shadow-neu-flat px-3 py-2.5 flex items-start gap-2">
+          {error && <AlertTriangle size={14} className="text-danger-text mt-0.5 shrink-0"/>}
+          <span role={error ? 'alert' : 'status'} className="text-[11px] flex-1 break-words">{error || generationProgress}</span>
+          {error && <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={13}/></button>}
+        </div>}
+      </div>
+      <PlayerBar theme={theme} audioBlob={activeTake?.blob || null}
+        playback={playback} onPlayPause={handlePlayPause} onSeek={handleSeek}
+        onVolumeChange={handleVolume} onToggleMute={handleToggleMute}
+        onRestart={handleRestart} onSave={handleSave} />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)}
+        appConfig={appConfig} onSaved={handleConfigSaved} />
     </div>
   );
 };
-
 export default App;

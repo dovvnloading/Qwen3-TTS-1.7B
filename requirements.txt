@@ -1,0 +1,10 @@
+# Python 3.12. Install a CUDA-compatible torch/torchaudio pair separately
+# using the official PyTorch instructions for your GPU and CUDA version.
+qwen-tts==0.1.1
+fastapi>=0.116,<1
+uvicorn>=0.35,<1
+python-multipart>=0.0.20,<1
+numpy>=1.26,<3
+soundfile>=0.12,<1
+huggingface-hub>=0.34,<2
+pywebview>=5,<7

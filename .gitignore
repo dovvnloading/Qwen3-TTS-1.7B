@@ -18,3 +18,15 @@ Local-TTS/Local-TTS/app_config.json
 # Local scratch / backups
 dist_backup_*/
 *.wav
+
+# Local generated WAV/metadata and model downloads
+*.flac
+*.mp3
+*.ogg
+*.log
+*.tmp
+*.safetensors
+models--*
+# Build output is generated via npm run build, not hand-edited.
+# Generated Vite output; always rebuild against the matching API.
+Local-TTS/Local-TTS/dist/
