@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from urllib.parse import urlsplit
+import secrets
 
 MAX_REQUEST_BYTES = 24 * 1024 * 1024
 
@@ -34,9 +35,12 @@ class RequestSizeLimitMiddleware:
     overflow reject the request without invoking the downstream FastAPI app.
     """
 
-    def __init__(self, app, *, max_bytes: int = MAX_REQUEST_BYTES):
+    def __init__(self, app, *, max_bytes: int = MAX_REQUEST_BYTES,
+                 expected_token: str | None = None, port: int = 8000):
         self.app = app
         self.max_bytes = max_bytes
+        self.expected_token = expected_token
+        self.port = port
 
     async def __call__(self, scope, receive, send):
         if (scope["type"] != "http" or
@@ -56,6 +60,15 @@ class RequestSizeLimitMiddleware:
             await send({"type": "http.response.body", "body": body})
 
         headers = dict(scope.get("headers", []))
+        # Reject unauthorized browser requests *before* buffering 24MB of data.
+        # The normal API middleware performs the same checks in depth.
+        if self.expected_token is not None:
+            token = headers.get(b"x-local-token", b"").decode("latin1")
+            if not secrets.compare_digest(token, self.expected_token):
+                return await error(403, "Invalid local session.")
+            origin = headers.get(b"origin", b"").decode("latin1")
+            if not is_trusted_origin(origin, port=self.port):
+                return await error(403, "Untrusted origin.")
         content_length = headers.get(b"content-length", b"")
         if content_length:
             try:
