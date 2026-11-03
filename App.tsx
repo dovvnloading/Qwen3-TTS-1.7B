@@ -43,6 +43,7 @@ const App: React.FC = () => {
   const takesRef = useRef<AudioTake[]>([]);
   const busyRef = useRef(false);
   const modelTypeRef = useRef<string | null>(null);
+  const capabilitiesLoadingRef = useRef(false);
   const generateRef = useRef<() => void>(() => {});
 
   const selectedModel = config.mode === 'clone' ? 'base' : 'custom';
@@ -62,7 +63,7 @@ const App: React.FC = () => {
   const refreshCapabilities = useCallback(async () => {
     try {
       const response = await apiFetch('/api/capabilities');
-      if (!response.ok) return;
+      if (!response.ok) return false;
       const data = await response.json();
       const normalize = (values: unknown, defaults: string[]): string[] =>
         Array.isArray(values)
@@ -72,8 +73,16 @@ const App: React.FC = () => {
       const speakers = normalize(data.speakers, SPEAKERS);
       const languages = normalize(data.languages, LANGUAGES);
       if (speakers.length) setSpeakerOptions(speakers);
-      if (languages.length) setLanguageOptions([...new Set(['Auto', ...languages])]);
-    } catch (e) { console.warn('Capabilities unavailable; using built-in options', e); }
+      if (languages.length) {
+        setLanguageOptions([...new Map(
+          ['Auto', ...languages].map((value) => [value.toLowerCase(), value])
+        ).values()]);
+      }
+      return true;
+    } catch (e) {
+      console.warn('Capabilities unavailable; using built-in options', e);
+      return false;
+    }
   }, []);
 
   useEffect(() => {
@@ -81,23 +90,32 @@ const App: React.FC = () => {
     let timer = 0;
     let failures = 0;
     const poll = async () => {
+      // Never allow a stalled HTTP request to stop the status poll permanently.
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 7000);
       try {
-        const res = await apiFetch('/api/status');
+        const res = await apiFetch('/api/status', { signal: controller.signal });
         if (!res.ok) throw new Error('Status endpoint unavailable');
         const data = await res.json();
         if (cancelled) return;
         failures = 0;
         setModelState(data.status);
         setModelDetail(data.detail || '');
-        if (data.modelType && data.modelType !== modelTypeRef.current) {
-          modelTypeRef.current = data.modelType;
-          void refreshCapabilities();
+        if (data.modelType && data.modelType !== modelTypeRef.current
+            && !capabilitiesLoadingRef.current) {
+          capabilitiesLoadingRef.current = true;
+          const type = data.modelType as string;
+          void refreshCapabilities().then((ok) => {
+            if (ok) modelTypeRef.current = type;
+          }).finally(() => { capabilitiesLoadingRef.current = false; });
         }
       } catch {
         if (++failures >= 3 && !cancelled) {
           setModelState('error');
           setModelDetail('Local backend is unreachable. Check the server console.');
         }
+      } finally {
+        clearTimeout(timeout);
       }
       if (!cancelled) timer = window.setTimeout(poll, 1500);
     };
