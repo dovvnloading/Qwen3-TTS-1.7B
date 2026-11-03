@@ -40,6 +40,8 @@ def release_single_instance_lock():
         _instance_mutex = None
 
 if os.name == 'nt':
+    # HANDLE is pointer-sized; ctypes' default c_int truncates on 64-bit Windows.
+    ctypes.windll.kernel32.CreateMutexW.restype = ctypes.c_void_p
     _instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
     if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
         ctypes.windll.user32.MessageBoxW(
@@ -438,28 +440,28 @@ def generate_audio(
                 if index < len(segments) - 1 and pause_ms > 0:
                     all_segments.append(np.zeros(int(sr * pause_ms / 1000), dtype=np.float32))
             combined = np.concatenate(all_segments)
-        final_audio = process_output_audio(
-            combined, sr, normalize=normalize, trim_silence=trim_silence
-        )
-        buffer = io.BytesIO()
-        sf.write(buffer, final_audio, sr, format="WAV", subtype="PCM_16")
-        wav_bytes = buffer.getvalue()
-        elapsed = time.perf_counter() - started
-        rtf = elapsed / max(0.001, len(final_audio) / sr)
-        print(f"[Inference] {len(segments)} segments, {elapsed:.2f}s, RTF {rtf:.3f}")
-        clip_id = secrets.token_urlsafe(16)
-        with audio_lock:
-            audio_archive[clip_id] = wav_bytes
-            while (len(audio_archive) > 12
-                   or sum(len(data) for data in audio_archive.values()) > MAX_ARCHIVED_AUDIO_BYTES):
-                audio_archive.popitem(last=False)
-        return Response(
-            content=wav_bytes, media_type="audio/wav",
-            headers={"X-TTS-Segments": str(len(segments)),
-                     "X-TTS-Clip-ID": clip_id,
-                     "X-TTS-RTF": f"{rtf:.4f}",
-                     "X-TTS-Seed": str(seed) if seed is not None else ""},
-        )
+            final_audio = process_output_audio(
+                combined, sr, normalize=normalize, trim_silence=trim_silence
+            )
+            buffer = io.BytesIO()
+            sf.write(buffer, final_audio, sr, format="WAV", subtype="PCM_16")
+            wav_bytes = buffer.getvalue()
+            elapsed = time.perf_counter() - started
+            rtf = elapsed / max(0.001, len(final_audio) / sr)
+            print(f"[Inference] {len(segments)} segments, {elapsed:.2f}s, RTF {rtf:.3f}")
+            clip_id = secrets.token_urlsafe(16)
+            with audio_lock:
+                audio_archive[clip_id] = wav_bytes
+                while (len(audio_archive) > 12
+                       or sum(len(data) for data in audio_archive.values()) > MAX_ARCHIVED_AUDIO_BYTES):
+                    audio_archive.popitem(last=False)
+            return Response(
+                content=wav_bytes, media_type="audio/wav",
+                headers={"X-TTS-Segments": str(len(segments)),
+                         "X-TTS-Clip-ID": clip_id,
+                         "X-TTS-RTF": f"{rtf:.4f}",
+                         "X-TTS-Seed": str(seed) if seed is not None else ""},
+            )
     except HTTPException:
         raise
     except (ValueError, FileNotFoundError) as exc:
