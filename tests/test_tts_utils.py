@@ -139,3 +139,33 @@ def test_backend_keeps_generation_within_model_lock():
 def test_backend_compiles_without_running_model():
     src = (PROJECT / "Local-TTS" / "Local-TTS" / "Local_TTS.py").read_text(encoding="utf-8")
     compile(src, "Local_TTS.py", "exec")
+
+
+def test_antiphase_stereo_reference_does_not_cancel():
+    sample_rate = 24000
+    t = np.arange(2 * sample_rate, dtype=np.float64) / sample_rate
+    speech_like = (np.sin(2 * np.pi * 220 * t) * 0.25).astype(np.float32)
+    stereo = np.column_stack((speech_like, -speech_like))
+    audio, decoded_rate = decode_reference_audio(wav_bytes(stereo, sample_rate))
+    assert decoded_rate == sample_rate
+    assert float(np.max(np.abs(audio))) > 0.20
+
+
+def test_decoding_has_an_explicit_frame_cap(monkeypatch):
+    from types import SimpleNamespace
+    from tts_utils import MAX_REFERENCE_SECONDS
+    captured = []
+
+    monkeypatch.setattr(sf, "info", lambda _: SimpleNamespace(
+        samplerate=24000, channels=1, duration=2.0, frames=48000))
+
+    def fake_read(_, *, frames, dtype, always_2d):
+        captured.append(frames)
+        assert dtype == "float32"
+        assert always_2d
+        return np.ones((48000, 1), dtype=np.float32) * 0.1, 24000
+
+    monkeypatch.setattr(sf, "read", fake_read)
+    decoded, _ = decode_reference_audio(b"minimal compressed audio placeholder")
+    assert captured == [MAX_REFERENCE_SECONDS * 24000 + 1]
+    assert len(decoded) == 48000
