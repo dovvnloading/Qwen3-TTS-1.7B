@@ -316,7 +316,11 @@ async def protect_local_api(request: Request, call_next):
     response = await call_next(request)
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     return response
 
 # Outer ASGI middleware enforces a real byte limit on chunked requests (not just
@@ -375,7 +379,7 @@ def generate_audio(
             ref_audio.file.close()
     if not generation_gate.acquire(blocking=False):
         raise HTTPException(429, "A synthesis job is already running.")
-    started = time.perf_counter()
+    wall_started = time.perf_counter()
     try:
         # The lock protects both model replacement and every operation that uses it.
         with model_lock:
@@ -400,9 +404,12 @@ def generate_audio(
                 print(f"Splitting speech into {len(segments)} sentences.")
             prompt = None
             if cloning:
+                # Fixed-size digests avoid ambiguity between audio and transcript bytes.
+                audio_digest = hashlib.sha256(payload).digest()
+                transcript_digest = hashlib.sha256(ref_text.encode("utf-8")).digest()
                 cache_key = hashlib.sha256(
-                    payload + b"\\0" + ref_text.encode("utf-8") +
-                    b"\\0" + str(bool(ref_text.strip())).encode("ascii")
+                    audio_digest + transcript_digest +
+                    bytes([1 if ref_text.strip() else 0])
                 ).hexdigest()
                 prompt = voice_prompt_cache.get(cache_key)
                 if prompt is None:
@@ -418,6 +425,7 @@ def generate_audio(
             all_segments = []
             sr = None
             total_frames = 0
+            inference_started = time.perf_counter()
             for index, segment in enumerate(segments):
                 if cloning:
                     wavs, segment_sr = model.generate_voice_clone(
@@ -450,9 +458,11 @@ def generate_audio(
             buffer = io.BytesIO()
             sf.write(buffer, final_audio, sr, format="WAV", subtype="PCM_16")
             wav_bytes = buffer.getvalue()
-            elapsed = time.perf_counter() - started
+            elapsed = time.perf_counter() - inference_started
+            wall_elapsed = time.perf_counter() - wall_started
             rtf = elapsed / max(0.001, len(final_audio) / sr)
-            print(f"[Inference] {len(segments)} segments, {elapsed:.2f}s, RTF {rtf:.3f}")
+            print(f"[Inference] {len(segments)} segments, {elapsed:.2f}s synth / "
+                  f"{wall_elapsed:.2f}s end-to-end, RTF {rtf:.3f}")
             clip_id = secrets.token_urlsafe(16)
             with audio_lock:
                 audio_archive[clip_id] = wav_bytes
@@ -464,6 +474,7 @@ def generate_audio(
                 headers={"X-TTS-Segments": str(len(segments)),
                          "X-TTS-Clip-ID": clip_id,
                          "X-TTS-RTF": f"{rtf:.4f}",
+                         "X-TTS-Wall-Time": f"{wall_elapsed:.4f}",
                          "X-TTS-Seed": str(seed) if seed is not None else ""},
             )
     except HTTPException:
