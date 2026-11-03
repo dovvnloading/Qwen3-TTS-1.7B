@@ -40,10 +40,19 @@ def release_single_instance_lock():
         _instance_mutex = None
 
 if os.name == 'nt':
-    # HANDLE is pointer-sized; ctypes' default c_int truncates on 64-bit Windows.
-    ctypes.windll.kernel32.CreateMutexW.restype = ctypes.c_void_p
-    _instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
-    if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
+    # Declare both argument *and* result widths for the Win64 HANDLE API.
+    # Otherwise CloseHandle can silently receive a truncated pointer.
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.CreateMutexW.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p,
+    ]
+    _kernel32.CreateMutexW.restype = ctypes.c_void_p
+    _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    _kernel32.CloseHandle.restype = ctypes.c_int
+    _instance_mutex = _kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+    if not _instance_mutex:
+        raise OSError("Unable to acquire single-instance mutex.")
+    if _kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
         ctypes.windll.user32.MessageBoxW(
             None,
             "Qwen3-TTS Studio is already running. Check your taskbar or Task Manager for the existing instance.",
