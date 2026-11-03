@@ -137,7 +137,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from huggingface_hub import snapshot_download
-from urllib.parse import urlsplit
+from request_security import RequestSizeLimitMiddleware, is_trusted_origin
 from collections import OrderedDict
 import hashlib
 import secrets
@@ -308,8 +308,7 @@ async def protect_local_api(request: Request, call_next):
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
             if origin:
-                parts = urlsplit(origin)
-                if parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost"):
+                if not is_trusted_origin(origin, port=PORT):
                     return JSONResponse({"detail": "Untrusted origin."}, status_code=403)
             supplied = request.headers.get("x-local-token", "")
             if not secrets.compare_digest(supplied, SESSION_TOKEN):
@@ -319,6 +318,10 @@ async def protect_local_api(request: Request, call_next):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+# Outer ASGI middleware enforces a real byte limit on chunked requests (not just
+# Content-Length), before multipart parsing allocates reference audio in memory.
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
 
 @app.get("/api/session")
 def get_session():
@@ -470,7 +473,7 @@ def generate_audio(
         print(f"Generation failed: {exc}")
         if isinstance(exc, torch.cuda.OutOfMemoryError):
             raise HTTPException(507, "GPU memory exhausted. Close other GPU apps or use shorter text.") from exc
-        raise HTTPException(500, str(exc)) from exc
+        raise HTTPException(500, "Speech generation failed. Check the application logs.") from exc
     finally:
         generation_gate.release()
 
@@ -503,12 +506,14 @@ def get_capabilities():
 
 
 @app.post("/api/load")
-async def trigger_load():
+async def trigger_load(model_type: str = "custom"):
     """Retry a model load — used after the user fixes the path in Settings."""
+    if model_type not in MODEL_IDS:
+        raise HTTPException(400, "Unknown model type.")
     if model_status["state"] == "loading":
         return {"status": "loading", "detail": model_status["detail"]}
-    set_model_status("loading", "Loading model into memory…")
-    threading.Thread(target=preload_model, daemon=True).start()
+    set_model_status("loading", f"Loading {model_type} model into memory…")
+    threading.Thread(target=preload_model, args=(model_type,), daemon=True).start()
     return {"status": "loading", "detail": model_status["detail"]}
 
 class ConfigUpdate(BaseModel):
