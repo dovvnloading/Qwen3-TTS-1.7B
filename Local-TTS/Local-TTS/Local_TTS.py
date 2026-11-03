@@ -369,6 +369,7 @@ def generate_audio(
             ref_audio.file.close()
     if not generation_gate.acquire(blocking=False):
         raise HTTPException(429, "A synthesis job is already running.")
+    started = time.perf_counter()
     try:
         # The lock protects both model replacement and every operation that uses it.
         with model_lock:
@@ -410,6 +411,7 @@ def generate_audio(
                     voice_prompt_cache.move_to_end(cache_key)
             all_segments = []
             sr = None
+            total_frames = 0
             for index, segment in enumerate(segments):
                 if cloning:
                     wavs, segment_sr = model.generate_voice_clone(
@@ -429,6 +431,9 @@ def generate_audio(
                 if isinstance(result, torch.Tensor):
                     result = result.detach().cpu().numpy()
                 result = process_output_audio(result, sr)
+                total_frames += len(result)
+                if total_frames > 15 * 60 * sr:
+                    raise ValueError("Generated audio exceeds the 15-minute limit.")
                 all_segments.append(result)
                 if index < len(segments) - 1 and pause_ms > 0:
                     all_segments.append(np.zeros(int(sr * pause_ms / 1000), dtype=np.float32))
@@ -439,6 +444,9 @@ def generate_audio(
         buffer = io.BytesIO()
         sf.write(buffer, final_audio, sr, format="WAV", subtype="PCM_16")
         wav_bytes = buffer.getvalue()
+        elapsed = time.perf_counter() - started
+        rtf = elapsed / max(0.001, len(final_audio) / sr)
+        print(f"[Inference] {len(segments)} segments, {elapsed:.2f}s, RTF {rtf:.3f}")
         clip_id = secrets.token_urlsafe(16)
         with audio_lock:
             audio_archive[clip_id] = wav_bytes
@@ -449,6 +457,7 @@ def generate_audio(
             content=wav_bytes, media_type="audio/wav",
             headers={"X-TTS-Segments": str(len(segments)),
                      "X-TTS-Clip-ID": clip_id,
+                     "X-TTS-RTF": f"{rtf:.4f}",
                      "X-TTS-Seed": str(seed) if seed is not None else ""},
         )
     except HTTPException:
