@@ -117,14 +117,31 @@ def decode_reference_audio(payload: bytes) -> tuple[np.ndarray, int]:
         # Bound decoded allocation even if file metadata is malformed.
         if info.frames <= 0 or info.frames > MAX_REFERENCE_SECONDS * info.samplerate:
             raise ValueError("Invalid reference audio frame count.")
-        samples, sr = sf.read(io.BytesIO(payload), dtype="float32", always_2d=True)
+        # Bound decoding itself, not only decoder metadata: a crafted header
+        # cannot force us to expand an unbounded amount of compressed audio.
+        max_frames = int(MAX_REFERENCE_SECONDS * info.samplerate)
+        samples, sr = sf.read(
+            io.BytesIO(payload), frames=max_frames + 1,
+            dtype="float32", always_2d=True,
+        )
     except ValueError:
         raise
     except Exception as exc:
         raise ValueError("Unsupported or corrupt reference audio. Try WAV or FLAC.") from exc
-    if len(samples) != info.frames or sr != info.samplerate:
-        raise ValueError("Reference audio metadata does not match decoded samples.")
+    if sr != info.samplerate or len(samples) > MAX_REFERENCE_SECONDS * sr:
+        raise ValueError("Reference audio exceeds 90 seconds or has invalid metadata.")
+    duration = len(samples) / sr
+    if duration < MIN_REFERENCE_SECONDS:
+        raise ValueError("Reference audio must be at least one second long.")
     mono = np.mean(samples, axis=1).astype(np.float32)
+    if samples.shape[1] == 2:
+        # Anti-phase stereo can cancel voices when mixed to mono. Prefer a
+        # non-silent channel if the downmix nearly cancels the source.
+        individual_rms = np.sqrt(np.mean(np.square(samples.astype(np.float64)), axis=0))
+        mixed_rms = float(np.sqrt(np.mean(np.square(mono.astype(np.float64)))))
+        loudest = int(np.argmax(individual_rms))
+        if individual_rms[loudest] > 0.001 and mixed_rms < 0.1 * individual_rms[loudest]:
+            mono = samples[:, loudest].copy()
     if not np.all(np.isfinite(mono)):
         raise ValueError("Reference audio contains invalid samples.")
     if float(np.max(np.abs(mono))) < 0.001:
