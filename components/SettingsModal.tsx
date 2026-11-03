@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { X, FolderOpen } from 'lucide-react';
 import { AppConfig } from '../types';
 import { Button } from './ui/Button';
-import { apiFetch } from '../api';
+import { apiFetch, readApiError } from '../api';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -52,8 +52,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modelsDir, downloadMode, precision }),
       });
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to save settings'));
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to save settings');
       onClose();
       onSaved(false);
     } catch (e) {
