@@ -1,6 +1,7 @@
 """Fast offline regression checks; no model weights or CUDA required."""
 import ast
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import soundfile as sf
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "Local-TTS" / "Local-TTS"))
 from tts_utils import (
-    safe_spa_path, snapshot_complete, cached_model_path,
+    safe_spa_path, snapshot_complete, cached_model_path, safetensors_complete,
     decode_reference_audio, split_text, process_output_audio,
 )
 
@@ -44,7 +45,12 @@ def make_complete_snapshot(folder: Path):
     for name in REQUIRED_MODEL_FILES:
         path = folder / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"test weights")
+        if name.endswith(".safetensors"):
+            tensor = {"tensor": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}
+            header = json.dumps(tensor).encode("utf-8")
+            path.write_bytes(len(header).to_bytes(8, "little") + header + bytes(4))
+        else:
+            path.write_bytes(b"test config")
 
 
 def test_incomplete_cache_is_not_reported_ready(tmp_path):
@@ -57,6 +63,10 @@ def test_incomplete_cache_is_not_reported_ready(tmp_path):
     make_complete_snapshot(direct)
     assert snapshot_complete(direct)
     assert cached_model_path(repo_id, str(tmp_path)) == str(direct)
+    weight = direct / "model.safetensors"
+    weight.write_bytes(weight.read_bytes()[:-1])
+    assert not safetensors_complete(weight)
+    assert not snapshot_complete(direct)
 
 
 def test_hf_cache_layout_is_supported(tmp_path):
