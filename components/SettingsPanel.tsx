@@ -101,8 +101,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <option value="default">Model defaults (recommended baseline)</option>
               <option value="consistent">Consistent (less sampling variation)</option>
               <option value="expressive">Expressive (more variation)</option>
+              <option value="custom">Custom generation parameters</option>
             </select>
           </Field>
+          {config.qualityPreset === 'custom' && <div className="grid grid-cols-2 gap-3">
+            {([
+              ['advancedTemperature', 'Temperature (0.1–2)', 0.1, 2, 0.05],
+              ['advancedTopP', 'Top P (0–1)', 0.01, 1, 0.05],
+              ['advancedTopK', 'Top K (1–200)', 1, 200, 1],
+              ['advancedRepetitionPenalty', 'Repetition penalty (1–2)', 1, 2, 0.05],
+              ['advancedMaxNewTokens', 'Max new tokens (64–4096)', 64, 4096, 64],
+            ] as const).map(([name, label, min, max, step]) =>
+              <Field label={label} key={name}>
+                <input type="number" value={config[name]} min={min} max={max} step={step}
+                  onChange={(e) => setField(name, e.target.value)}
+                  placeholder="Model default" className={inputClass}/>
+              </Field>
+            )}
+          </div>}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Candidate takes">
               <select value={config.candidates} className={inputClass}
