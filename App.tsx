@@ -15,6 +15,8 @@ const initialConfig: TTSConfig = {
   text: '', speaker: SPEAKERS[0], language: LANGUAGES[0], styleInstruction: '',
   mode: 'preset', refAudioFile: null, refText: '',
   qualityPreset: 'default', seed: '', candidates: 1, longForm: false,
+  advancedTemperature: '', advancedTopP: '', advancedTopK: '',
+  advancedRepetitionPenalty: '', advancedMaxNewTokens: '',
   pauseMs: 250, normalize: false, trimSilence: false,
 };
 const initialPlayback: PlaybackState = {
@@ -198,6 +200,17 @@ const App: React.FC = () => {
           form.append('top_p', '0.98');
           form.append('repetition_penalty', '1.02');
         }
+        if (config.qualityPreset === 'custom') {
+          for (const [name, setting] of [
+            ['temperature', config.advancedTemperature],
+            ['top_p', config.advancedTopP],
+            ['top_k', config.advancedTopK],
+            ['repetition_penalty', config.advancedRepetitionPenalty],
+            ['max_new_tokens', config.advancedMaxNewTokens],
+          ] as const) {
+            if (setting.trim()) form.append(name, setting);
+          }
+        }
         const seed = baseSeed === null ? null : (baseSeed + index) % 2147483648;
         if (seed !== null) form.append('seed', String(seed));
         const response = await apiFetch('/api/generate', { method: 'POST', body: form });
@@ -217,6 +230,8 @@ const App: React.FC = () => {
           url: URL.createObjectURL(blob),
           blob,
           label: `Take ${index + 1} · ${config.mode === 'clone' ? 'Clone' : config.speaker}`,
+          rtf: response.headers.get('X-TTS-RTF')
+            ? Number(response.headers.get('X-TTS-RTF')) : null,
         };
         addTake(take);
         successes++;
@@ -308,6 +323,7 @@ const App: React.FC = () => {
                   activeTake?.id === take.id ? 'shadow-neu-pressed text-strong' : 'shadow-neu-flat text-text-muted'
                 }`}>
                 {take.label}{take.seed !== null ? ` · #${take.seed}` : ''}
+                {take.rtf !== null ? ` · RTF ${take.rtf.toFixed(2)}` : ''}
               </button>)}
             </div>
           </div>}
