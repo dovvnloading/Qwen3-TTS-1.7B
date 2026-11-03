@@ -102,3 +102,39 @@ def test_selected_load_target_is_forwarded_to_worker():
     source = (ROOT / "Local-TTS" / "Local-TTS" / "Local_TTS.py").read_text(encoding="utf8")
     assert 'args=(model_type,)' in source
     assert 'model_type not in MODEL_IDS' in source
+
+def test_unauthorized_upload_rejected_before_reading_body():
+    async def never_read():
+        raise AssertionError("Body must not be read")
+
+    async def never_call(scope, receive, send):
+        raise AssertionError("Endpoint must not run")
+
+    sent = []
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/api/generate",
+             "headers": [(b"origin", b"http://127.0.0.1:8000")]}
+    asyncio.run(RequestSizeLimitMiddleware(never_call, expected_token="secret")(
+        scope, never_read, send))
+    assert sent[0]["status"] == 403
+
+
+def test_untrusted_origin_rejected_before_reading_body():
+    async def never_read():
+        raise AssertionError("Body must not be read")
+
+    async def never_call(scope, receive, send):
+        raise AssertionError("Endpoint must not run")
+
+    sent = []
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/api/generate",
+             "headers": [(b"x-local-token", b"secret"),
+                         (b"origin", b"http://localhost:8888")]}
+    asyncio.run(RequestSizeLimitMiddleware(never_call, expected_token="secret")(
+        scope, never_read, send))
+    assert sent[0]["status"] == 403
