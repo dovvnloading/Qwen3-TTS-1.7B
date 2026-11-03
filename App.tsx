@@ -9,7 +9,7 @@ import { PlayerBar } from './components/PlayerBar';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/Button';
 import { useTheme } from './useTheme';
-import { apiFetch } from './api';
+import { apiFetch, readApiError } from './api';
 
 const initialConfig: TTSConfig = {
   text: '', speaker: SPEAKERS[0], language: LANGUAGES[0], styleInstruction: '',
@@ -111,8 +111,7 @@ const App: React.FC = () => {
     try {
       const res = await apiFetch(`/api/load?model_type=${selectedModel}`, { method: 'POST' });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || 'Load failed');
+        throw new Error(await readApiError(res, 'Load failed'));
       }
     } catch (e) {
       setModelState('error');
@@ -180,6 +179,10 @@ const App: React.FC = () => {
   const handleGenerate = async () => {
     if (busyRef.current || !config.text.trim() || !canTryGenerate) return;
     if (config.mode === 'clone' && !config.refAudioFile) return;
+    if (config.text.length > 20000) {
+      setError('Text exceeds the 20,000-character maximum.');
+      return;
+    }
     if (!config.longForm && config.text.length > 1200) {
       setError('Enable Long-form mode to synthesize more than 1,200 characters.');
       return;
@@ -241,8 +244,7 @@ const App: React.FC = () => {
         if (seed !== null) form.append('seed', String(seed));
         const response = await apiFetch('/api/generate', { method: 'POST', body: form });
         if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data.detail || `Server error (${response.status})`);
+          throw new Error(await readApiError(response, `Server error (${response.status})`));
         }
         const blob = await response.blob();
         if (blob.size < 44) throw new Error('The server returned empty audio.');
@@ -311,10 +313,17 @@ const App: React.FC = () => {
     const name = `qwen3-tts-${activeTake.speaker.replace(/[^\w-]/g, '_')}-${activeTake.createdAt}.wav`;
     const bridge = (window as any).pywebview?.api?.save_audio;
     if (bridge && activeTake.clipId) {
-      const result = await bridge(activeTake.clipId, name);
-      if (result?.saved) return;
-      if (result?.error) { setError(result.error); return; }
-      return; // User cancelled the native Save dialog.
+      try {
+        const result = await bridge(activeTake.clipId, name);
+        if (result?.saved) return;
+        if (result?.error) {
+          setError(`Native Save failed: ${result.error}. Falling back to download.`);
+        } else {
+          return; // User cancelled the native Save dialog.
+        }
+      } catch (err) {
+        setError(`Native Save failed: ${String(err)}. Falling back to download.`);
+      }
     }
     const link = document.createElement('a');
     link.href = activeTake.url;
