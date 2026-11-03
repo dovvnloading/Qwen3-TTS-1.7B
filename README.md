@@ -58,7 +58,7 @@ npm run typecheck
 npm run build
 ```
 
-Vite writes the production files directly into `Local-TTS/Local-TTS/dist/`. **Rebuild after each frontend source update**, because the repository may contain a prebuilt UI from an older revision.
+Vite writes the production files directly into `Local-TTS/Local-TTS/dist/`. **Rebuild after each frontend source update**, because generated frontend files are intentionally not committed. The backend refuses to open a stale or missing build.
 
 Start the real backend entry point from the repository root:
 
