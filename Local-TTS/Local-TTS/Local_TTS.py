@@ -7,8 +7,9 @@ import ctypes
 # Force UTF-8 so emoji in log messages below never crash a non-UTF-8 console
 # (this previously killed model loading silently: the print() itself raised
 # UnicodeEncodeError, which the broad except in lifespan() swallowed).
-sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 # Single-instance guard, checked BEFORE any heavy imports (torch, qwen_tts,
 # fastapi, ...) below. A duplicate launch previously got far enough to start
@@ -52,28 +53,60 @@ if os.name == 'nt':
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(SCRIPT_DIR, "app_config.json")
+# Persist settings in a writable per-user directory, not a source checkout.
+LEGACY_CONFIG_PATH = os.path.join(SCRIPT_DIR, "app_config.json")
+_USER_DATA = os.environ.get("LOCALAPPDATA") if os.name == "nt" else None
+APP_DATA_DIR = os.path.join(_USER_DATA or os.path.join(os.path.expanduser("~"), ".config"), "qwen3-tts-studio")
+CONFIG_PATH = os.path.join(APP_DATA_DIR, "app_config.json")
+_DEFAULT_CACHE = os.path.join(
+    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")) if os.name == "nt"
+    else os.path.join(os.path.expanduser("~"), ".cache"),
+    "qwen3-tts-studio", "hub",
+)
 DEFAULT_CONFIG = {
-    "models_dir": "D:\\Models",
+    "models_dir": _DEFAULT_CACHE,
     "download_mode": False,
+    "precision": "auto",
 }
 
 def load_app_config():
-    if os.path.isfile(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return {**DEFAULT_CONFIG, **json.load(f)}
-        except Exception as e:
-            print(f"--- ⚠️  Failed to read app_config.json, using defaults: {e} ---")
+    for path in (CONFIG_PATH, LEGACY_CONFIG_PATH):
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if not isinstance(loaded, dict):
+                    raise ValueError("Invalid config format")
+                result = {**DEFAULT_CONFIG, **loaded}
+                if result["precision"] not in ("auto", "float16", "bfloat16", "float32"):
+                    result["precision"] = "auto"
+                return result
+            except Exception as e:
+                print(f"Warning: cannot read config {path}: {e}")
     return dict(DEFAULT_CONFIG)
 
 def save_app_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".config-", suffix=".json", dir=APP_DATA_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, CONFIG_PATH)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
+# tempfile must be available before configuration is first saved.
+import tempfile
 app_config = load_app_config()
 if not os.path.isfile(CONFIG_PATH):
-    save_app_config(app_config)
+    try:
+        save_app_config(app_config)
+    except OSError as exc:
+        print(f"Warning: unable to persist initial configuration: {exc}")
+
 
 # Models are resolved from a local Hugging Face cache directory. This must happen
 # before qwen_tts (and therefore huggingface_hub/transformers) is imported, since
@@ -88,9 +121,9 @@ if not os.path.isfile(CONFIG_PATH):
 # auto-download a model the user didn't ask for" guarantee comes from the
 # is_model_cached() pre-flight check in load_model_instance() below, not from
 # blocking the network at the environment level.
-os.makedirs(app_config["models_dir"], exist_ok=True)
-os.environ["HF_HUB_CACHE"] = app_config["models_dir"]
-os.environ["HUGGINGFACE_HUB_CACHE"] = app_config["models_dir"]
+# Explicit local snapshot paths below enforce offline operation when downloads are disabled.
+# Avoid setting process-global Hub cache variables; model directories can change at runtime.
+
 
 import io
 import torch
@@ -102,14 +135,27 @@ import shutil
 import gc
 import time
 import ctypes
-from ctypes import windll, c_int, byref, c_void_p
+from ctypes import c_int, byref, c_void_p
+if os.name == "nt":
+    from ctypes import windll
 
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
+from huggingface_hub import snapshot_download
+from urllib.parse import urlsplit
+from collections import OrderedDict
+import hashlib
+import secrets
+import numpy as np
+from tts_utils import (
+    MAX_REFERENCE_BYTES, MAX_TEXT_CHARS, cached_model_path, snapshot_complete,
+    safe_spa_path, decode_reference_audio, split_text, process_output_audio,
+)
 
 try:
     from qwen_tts import Qwen3TTSModel
@@ -130,7 +176,17 @@ MODEL_IDS = {
 # THIS, not on the model being loaded: the UI has to be reachable before a model
 # is ready, otherwise the settings screen that fixes a bad model path can never
 # be opened in the first place.
-server_ready = threading.Event()
+# Security token is scoped to this process. The browser fetches it from the same origin.
+SESSION_TOKEN = secrets.token_urlsafe(32)
+MAX_REQUEST_BYTES = 24 * 1024 * 1024
+audio_lock = threading.Lock()
+last_audio_wav = None
+last_audio_name = "qwen3-tts.wav"
+# Reject concurrent GPU synthesis instead of running unsynchronized or queuing indefinitely.
+generation_gate = threading.BoundedSemaphore(1)
+# Prompt items may retain device tensors. Clear this cache when swapping models.
+voice_prompt_cache = OrderedDict()
+MAX_CACHED_PROMPTS = 2
 
 # Guards active_model_state. A background preload and an incoming /api/generate
 # can otherwise race: one swapping models out of VRAM while the other is
@@ -152,67 +208,66 @@ def set_model_status(state: str, detail: str = ""):
     model_status["state"] = state
     model_status["detail"] = detail
 
-def _model_cache_folder(repo_id: str, models_dir: str) -> str:
-    return os.path.join(models_dir, "models--" + repo_id.replace("/", "--"))
-
 def is_model_cached(repo_id: str, models_dir: str) -> bool:
-    snapshots_dir = os.path.join(_model_cache_folder(repo_id, models_dir), "snapshots")
-    if not os.path.isdir(snapshots_dir):
-        return False
-    for entry in os.listdir(snapshots_dir):
-        if os.path.isfile(os.path.join(snapshots_dir, entry, "config.json")):
-            return True
-    return False
+    return cached_model_path(repo_id, models_dir) is not None
+
+def _unload_model():
+    global active_model_state
+    if active_model_state["instance"] is None:
+        return
+    active_model_state["instance"] = None
+    active_model_state["type"] = None
+    voice_prompt_cache.clear()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 def load_model_instance(model_type: str):
-    """Load `model_type`, evicting any currently-resident model first.
-
-    Callers must hold model_lock; this mutates global state and VRAM.
-    """
-    global active_model_state
-
-    if active_model_state["type"] == model_type and active_model_state["instance"] is not None:
+    """Resolve/verify model files before evicting a working GPU model."""
+    if model_type not in MODEL_IDS:
+        raise ValueError("Unknown model type")
+    if (active_model_state["type"] == model_type
+            and active_model_state["instance"] is not None):
         return active_model_state["instance"]
-
-    if active_model_state["instance"] is not None:
-        print(f"\n--- ♻️  OFF-RAMP: Unloading '{active_model_state['type']}' from VRAM ---")
-        del active_model_state["instance"]
-        active_model_state["instance"] = None
-        active_model_state["type"] = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-        print("--- 🧹 VRAM Cleared ---\n")
-
-    print(f"--- 🚀 ON-RAMP: Loading '{model_type.upper()}' Model ---")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
-
     model_id = MODEL_IDS[model_type]
-
-    if not app_config["download_mode"] and not is_model_cached(model_id, app_config["models_dir"]):
-        raise RuntimeError(
-            f"'{model_id}' was not found in {app_config['models_dir']} and downloading is disabled. "
-            "Open Settings to point at the correct models directory or enable download mode."
+    model_dir = app_config["models_dir"]
+    local_source = cached_model_path(model_id, model_dir)
+    if local_source is None and not app_config["download_mode"]:
+        raise FileNotFoundError(
+            f"{model_id} is missing or incomplete under {model_dir}. "
+            "Choose a complete local model in Settings, or enable downloads."
         )
+    if local_source is None:
+        os.makedirs(model_dir, exist_ok=True)
+        local_source = snapshot_download(repo_id=model_id, cache_dir=model_dir)
+        if not snapshot_complete(local_source):
+            raise RuntimeError(f"Download is incomplete: {model_id}")
+    # Once the new model is known to exist, free the old model to avoid VRAM overlap.
+    _unload_model()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    preference = app_config.get("precision", "auto")
+    if device == "cpu":
+        dtype = torch.float32
+    elif preference == "bfloat16":
+        if not torch.cuda.is_bf16_supported():
+            raise ValueError("This GPU does not support BF16.")
+        dtype = torch.bfloat16
+    elif preference == "float32":
+        dtype = torch.float32
+    elif preference == "float16":
+        dtype = torch.float16
+    else:
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
-    try:
-        model = Qwen3TTSModel.from_pretrained(
-            model_id,
-            device_map="auto",
-            dtype=dtype,
-            # sdpa benchmarked >= flash_attention_2 for this short-sequence
-            # autoregressive decode on RTX 3060 Ti (mean RTF 2.97 vs 3.09).
-            attn_implementation="sdpa"
-        )
-        active_model_state["instance"] = model
-        active_model_state["type"] = model_type
-        print(f"--- ✅ {model_type.upper()} Model Ready ---\n")
-        return model
-    except Exception as e:
-        print(f"--- ❌ LOAD FAILED: {e} ---")
-        raise e
+    print(f"Loading {model_type} from {local_source} on {device} ({dtype})")
+    # SDPA is the measured good baseline on the original RTX 3060 Ti.
+    model = Qwen3TTSModel.from_pretrained(
+        local_source, device_map="auto", dtype=dtype, attn_implementation="sdpa"
+    )
+    active_model_state["instance"] = model
+    active_model_state["type"] = model_type
+    print(f"Ready: {model_type}")
+    return model
 
 def ensure_model(model_type: str):
     """Return a ready instance of `model_type`, loading it if necessary."""
@@ -231,50 +286,54 @@ def ensure_model(model_type: str):
             raise
 
 def preload_model(model_type: str = "custom"):
-    """Background startup/retry load.
-
-    Reports a missing model as a normal 'error' state rather than raising, so
-    the UI can show it and point the user at Settings.
-    """
-    model_id = MODEL_IDS[model_type]
-    if not app_config["download_mode"] and not is_model_cached(model_id, app_config["models_dir"]):
-        detail = (
-            f"No model found in {app_config['models_dir']}. Open Settings to point at the "
-            "folder containing your models, or enable downloading."
-        )
-        set_model_status("error", detail)
-        print(f"--- ⚠️  {detail} ---")
-        return
     try:
         ensure_model(model_type)
     except Exception as e:
-        print(f"--- ❌ Model load failed: {e} ---")
+        print(f"Model load failed: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The model loads on a background thread so the window can open straight
-    # away. Blocking here previously meant that if the model was missing or the
-    # path was wrong, the user sat in front of a console with no GUI at all —
-    # including no way to reach the settings screen that would fix it.
     set_model_status("loading", "Starting up…")
     threading.Thread(target=preload_model, daemon=True).start()
-    server_ready.set()
-
     yield
-
-    active_model_state["instance"] = None
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    # Avoid unloading a model mid-inference during shutdown.
+    with model_lock:
+        _unload_model()
 
 app = FastAPI(lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+
+@app.middleware("http")
+async def protect_local_api(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        length = request.headers.get("content-length")
+        if length:
+            try:
+                if int(length) > MAX_REQUEST_BYTES:
+                    return JSONResponse({"detail": "Request too large."}, status_code=413)
+            except ValueError:
+                return JSONResponse({"detail": "Invalid Content-Length."}, status_code=400)
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("origin")
+            if origin:
+                parts = urlsplit(origin)
+                if parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost"):
+                    return JSONResponse({"detail": "Untrusted origin."}, status_code=403)
+            supplied = request.headers.get("x-local-token", "")
+            if not secrets.compare_digest(supplied, SESSION_TOKEN):
+                return JSONResponse({"detail": "Invalid local session."}, status_code=403)
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+@app.get("/api/session")
+def get_session():
+    return {"token": SESSION_TOKEN}
+
+
 
 # Deliberately a sync `def`: FastAPI runs sync endpoints in a worker thread,
 # whereas an `async def` would run model loading and generation directly on the
@@ -285,66 +344,132 @@ def generate_audio(
     text: str = Form(...),
     language: str = Form("Auto"),
     speaker: str = Form("Ryan"),
-    styleInstruction: str = Form(None),
+    styleInstruction: str = Form(""),
     ref_audio: UploadFile = File(None),
-    ref_text: str = Form(None)
+    ref_text: str = Form(""),
+    temperature: float | None = Form(None, ge=0.1, le=2.0),
+    top_p: float | None = Form(None, gt=0.0, le=1.0),
+    top_k: int | None = Form(None, ge=1, le=200),
+    repetition_penalty: float | None = Form(None, ge=1.0, le=2.0),
+    max_new_tokens: int | None = Form(None, ge=64, le=4096),
+    seed: int | None = Form(None, ge=0, le=2147483647),
+    long_form: bool = Form(False),
+    pause_ms: int = Form(250, ge=0, le=1500),
+    normalize: bool = Form(False),
+    trim_silence: bool = Form(False),
 ):
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="Text empty.")
-
-    is_cloning_request = ref_audio is not None and ref_audio.filename != ""
-    required_model_type = "base" if is_cloning_request else "custom"
-
+    global last_audio_wav, last_audio_name
+    if not text or not text.strip():
+        raise HTTPException(400, "Text is empty.")
+    if len(text) > MAX_TEXT_CHARS:
+        raise HTTPException(413, "Text exceeds 20,000 characters.")
+    if not long_form and len(text) > 1200:
+        raise HTTPException(400, "Use Long-form mode for text longer than 1,200 characters.")
+    if len(styleInstruction) > 1000 or len(ref_text) > 5000:
+        raise HTTPException(400, "Instruction or transcript is too long.")
+    cloning = ref_audio is not None and bool(ref_audio.filename)
+    model_type = "base" if cloning else "custom"
+    target_lang = "Auto" if language == "Auto" else language
+    reference = None
+    if cloning:
+        try:
+            payload = ref_audio.file.read(MAX_REFERENCE_BYTES + 1)
+            reference = decode_reference_audio(payload)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        finally:
+            ref_audio.file.close()
+    if not generation_gate.acquire(blocking=False):
+        raise HTTPException(429, "A synthesis job is already running.")
     try:
-        model = ensure_model(required_model_type)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    tmp_path = None
-    try:
-        target_lang = None if language == "Auto" else language
-
-        if required_model_type == "base":
-            print(f"[Infer] Mode: CLONE | Ref: {ref_audio.filename}")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                shutil.copyfileobj(ref_audio.file, tmp)
-                tmp_path = tmp.name
-
-            has_ref_text = bool(ref_text and ref_text.strip())
-            wavs, sr = model.generate_voice_clone(
-                text=text,
-                language=target_lang,
-                ref_audio=tmp_path,
-                ref_text=ref_text if has_ref_text else None,
-                x_vector_only_mode=not has_ref_text
-            )
-        else:
-            safe_speaker = speaker if speaker != "Voice Clone" else "Ryan"
-            print(f"[Infer] Mode: PRESET | Spk: {safe_speaker}")
-
-            wavs, sr = model.generate_custom_voice(
-                text=text,
-                language=target_lang,
-                speaker=safe_speaker,
-                instruct=styleInstruction if styleInstruction and styleInstruction.strip() else None
-            )
-
-        audio_data = wavs[0]
-        if isinstance(audio_data, torch.Tensor):
-            audio_data = audio_data.cpu().numpy()
-
+        # The lock protects both model replacement and every operation that uses it.
+        with model_lock:
+            model = ensure_model(model_type)
+            settings = {}
+            for k, v in (
+                ("temperature", temperature), ("top_p", top_p), ("top_k", top_k),
+                ("repetition_penalty", repetition_penalty), ("max_new_tokens", max_new_tokens),
+            ):
+                if v is not None:
+                    settings[k] = v
+            if seed is not None:
+                torch.manual_seed(seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(seed)
+            if long_form or len(text) > 280:
+                segments = split_text(text, max_chars=280)
+            else:
+                segments = [text.strip()]
+            if len(segments) > 1 and not long_form:
+                # Automatic segmentation for medium text avoids oversized decode.
+                print(f"Splitting speech into {len(segments)} sentences.")
+            prompt = None
+            if cloning:
+                cache_key = hashlib.sha256(
+                    payload + b"\\0" + ref_text.encode("utf-8") +
+                    b"\\0" + str(bool(ref_text.strip())).encode("ascii")
+                ).hexdigest()
+                prompt = voice_prompt_cache.get(cache_key)
+                if prompt is None:
+                    prompt = model.create_voice_clone_prompt(
+                        ref_audio=reference, ref_text=ref_text or None,
+                        x_vector_only_mode=not bool(ref_text.strip()),
+                    )
+                    voice_prompt_cache[cache_key] = prompt
+                    if len(voice_prompt_cache) > MAX_CACHED_PROMPTS:
+                        voice_prompt_cache.popitem(last=False)
+                else:
+                    voice_prompt_cache.move_to_end(cache_key)
+            all_segments = []
+            sr = None
+            for index, segment in enumerate(segments):
+                if cloning:
+                    wavs, segment_sr = model.generate_voice_clone(
+                        text=segment, language=target_lang, voice_clone_prompt=prompt,
+                        **settings,
+                    )
+                else:
+                    wavs, segment_sr = model.generate_custom_voice(
+                        text=segment, language=target_lang,
+                        speaker=speaker if speaker != "Voice Clone" else "Ryan",
+                        instruct=styleInstruction.strip() or None, **settings,
+                    )
+                if sr is not None and segment_sr != sr:
+                    raise RuntimeError("Sample rate changed between segments.")
+                sr = segment_sr
+                result = wavs[0]
+                if isinstance(result, torch.Tensor):
+                    result = result.detach().cpu().numpy()
+                result = process_output_audio(result, sr)
+                all_segments.append(result)
+                if index < len(segments) - 1 and pause_ms > 0:
+                    all_segments.append(np.zeros(int(sr * pause_ms / 1000), dtype=np.float32))
+            combined = np.concatenate(all_segments)
+        final_audio = process_output_audio(
+            combined, sr, normalize=normalize, trim_silence=trim_silence
+        )
         buffer = io.BytesIO()
-        sf.write(buffer, audio_data, sr, format='WAV')
-        buffer.seek(0)
-        return Response(content=buffer.read(), media_type="audio/wav")
-
-    except Exception as e:
-        print(f"[Error] {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        sf.write(buffer, final_audio, sr, format="WAV", subtype="PCM_16")
+        wav_bytes = buffer.getvalue()
+        with audio_lock:
+            last_audio_wav = wav_bytes
+            last_audio_name = "qwen3-tts.wav"
+        return Response(
+            content=wav_bytes, media_type="audio/wav",
+            headers={"X-TTS-Segments": str(len(segments)),
+                     "X-TTS-Seed": str(seed) if seed is not None else ""},
+        )
+    except HTTPException:
+        raise
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        print(f"Generation failed: {exc}")
+        if isinstance(exc, torch.cuda.OutOfMemoryError):
+            raise HTTPException(507, "GPU memory exhausted. Close other GPU apps or use shorter text.") from exc
+        raise HTTPException(500, str(exc)) from exc
     finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try: os.remove(tmp_path)
-            except: pass
+        generation_gate.release()
 
 @app.get("/api/status")
 async def get_status():
@@ -366,11 +491,13 @@ async def trigger_load():
 class ConfigUpdate(BaseModel):
     modelsDir: str
     downloadMode: bool
+    precision: str = "auto"
 
 def _config_response():
     return {
         "modelsDir": app_config["models_dir"],
         "downloadMode": app_config["download_mode"],
+        "precision": app_config.get("precision", "auto"),
         "models": {
             "custom": is_model_cached(MODEL_IDS["custom"], app_config["models_dir"]),
             "base": is_model_cached(MODEL_IDS["base"], app_config["models_dir"]),
@@ -381,47 +508,85 @@ def _config_response():
 async def get_config():
     return _config_response()
 
-def restart_app():
-    print("--- 🔄 Restarting to apply new model settings ---")
-    release_single_instance_lock()
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
 @app.post("/api/config")
-async def update_config(payload: ConfigUpdate):
+def update_config(payload: ConfigUpdate):
     models_dir = payload.modelsDir.strip()
     if not models_dir:
-        raise HTTPException(status_code=400, detail="Models directory cannot be empty.")
-
+        raise HTTPException(400, "Models directory cannot be empty.")
+    if payload.precision not in ("auto", "float16", "bfloat16", "float32"):
+        raise HTTPException(400, "Invalid precision choice.")
     try:
         os.makedirs(models_dir, exist_ok=True)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Cannot use this directory: {e}")
+    except OSError as exc:
+        raise HTTPException(400, f"Cannot use this directory: {exc}") from exc
+    with model_lock:
+        changed = (
+            os.path.normcase(os.path.abspath(models_dir))
+            != os.path.normcase(os.path.abspath(app_config["models_dir"]))
+            or payload.downloadMode != app_config["download_mode"]
+            or payload.precision != app_config.get("precision", "auto")
+        )
+        if changed:
+            new_config = {**app_config,
+                          "models_dir": models_dir,
+                          "download_mode": payload.downloadMode,
+                          "precision": payload.precision}
+            save_app_config(new_config)
+            _unload_model()
+            app_config.update(new_config)
+            set_model_status("idle", "Settings updated. Reload the model.")
+    return {"status": "updated" if changed else "unchanged", **_config_response()}
 
-    changed = (
-        os.path.normcase(os.path.normpath(models_dir)) != os.path.normcase(os.path.normpath(app_config["models_dir"]))
-        or payload.downloadMode != app_config["download_mode"]
-    )
 
-    app_config["models_dir"] = models_dir
-    app_config["download_mode"] = payload.downloadMode
-    save_app_config(app_config)
-
-    if changed:
-        threading.Timer(1.0, restart_app).start()
-        return {"status": "restarting", **_config_response()}
-    return {"status": "unchanged", **_config_response()}
-
-if os.path.exists(DIST_DIR):
+if os.path.isdir(DIST_DIR):
     app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
+
     @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        file_path = os.path.join(DIST_DIR, full_path)
-        if os.path.isfile(file_path):
-            return FileResponse(file_path)
+    def serve_spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(404, "API route not found.")
+        try:
+            file_path = safe_spa_path(DIST_DIR, full_path)
+        except ValueError:
+            raise HTTPException(404, "File not found.")
+        if file_path.is_file():
+            return FileResponse(str(file_path))
         return FileResponse(os.path.join(DIST_DIR, "index.html"))
 
+
 def start_backend():
-    uvicorn.run(app, host=HOST, port=PORT, log_level="critical")
+    global backend_server
+    config = uvicorn.Config(app, host=HOST, port=PORT, log_level="warning")
+    backend_server = uvicorn.Server(config)
+    backend_server.run()
+
+backend_server = None
+
+class DesktopApi:
+    """Native Save dialog; browser-only development falls back to a WAV download."""
+    def save_last_audio(self, suggested_name="qwen3-tts.wav"):
+        with audio_lock:
+            data = last_audio_wav
+        if not data:
+            return {"saved": False, "error": "No generated audio yet."}
+        import re
+        name = re.sub(r"[^a-zA-Z0-9._-]", "_", str(suggested_name))[:90]
+        if not name.lower().endswith(".wav"):
+            name += ".wav"
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.SAVE_DIALOG, save_filename=name,
+                file_types=("WAV files (*.wav)",),
+            )
+            if not result:
+                return {"saved": False}
+            chosen = result[0] if isinstance(result, (list, tuple)) else result
+            with open(chosen, "wb") as f:
+                f.write(data)
+            return {"saved": True, "path": str(chosen)}
+        except Exception as exc:
+            return {"saved": False, "error": str(exc)}
+
 
 def configure_window_ui():
     """
@@ -554,28 +719,26 @@ if __name__ == "__main__":
     print("Opening window; the model loads in the background.")
     print("---------------------------------------------------------\n")
 
-    # Wait only for the HTTP server, not the model. 30s is generous for binding
-    # a local port, and keeps a wedged model load from blocking the window.
-    if server_ready.wait(timeout=30):
-        webview.create_window(
-            title='Qwen3-TTS Studio',
-            url=f'http://{HOST}:{PORT}',
-            width=1200, height=800,
-            background_color='#212121',
-            resizable=True
-        )
-
-        webview.start(func=configure_window_ui)
-
-        # webview.start() blocks until the window closes. Force a hard exit
-        # here instead of letting the interpreter shut down 'naturally': on
-        # Windows, pywebview/WebView2 can leave non-daemon threads (and the
-        # whole WebView2 child-process tree) alive after the window closes,
-        # so the process silently lingers holding VRAM/RAM. That zombie
-        # state is what compounds into the next launch's model load hitting
-        # memory pressure and crashing.
-        print("--- Window closed, shutting down. ---")
-        os._exit(0)
-    else:
-        print("Timeout: the local server did not start.")
+    # Uvicorn sets started only after the listening socket is bound.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and t.is_alive():
+        if backend_server is not None and backend_server.started:
+            break
+        time.sleep(0.1)
+    if backend_server is None or not backend_server.started:
+        print(f"Could not bind the local HTTP server at {HOST}:{PORT}. Check for a port conflict.")
         sys.exit(1)
+
+    webview.create_window(
+        title="Qwen3-TTS Studio",
+        url=f"http://{HOST}:{PORT}",
+        width=1200, height=800,
+        background_color="#212121",
+        resizable=True,
+        js_api=DesktopApi(),
+    )
+    webview.start(func=configure_window_ui)
+    print("Window closed, shutting down.")
+    os._exit(0)
+
+ 
