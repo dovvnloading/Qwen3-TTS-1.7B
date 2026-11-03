@@ -482,6 +482,26 @@ async def get_status():
         "modelType": active_model_state["type"],
     }
 
+@app.get("/api/capabilities")
+def get_capabilities():
+    """Query installed model metadata; the UI can fall back to its defaults."""
+    with model_lock:
+        model = active_model_state["instance"]
+        if model is None:
+            return {"modelType": None, "speakers": [], "languages": []}
+        def read_values(method):
+            fn = getattr(model, method, None)
+            if not callable(fn):
+                return []
+            return list(fn() or [])
+        return {
+            "modelType": active_model_state["type"],
+            "speakers": read_values("get_supported_speakers")
+                if active_model_state["type"] == "custom" else [],
+            "languages": read_values("get_supported_languages"),
+        }
+
+
 @app.post("/api/load")
 async def trigger_load():
     """Retry a model load — used after the user fixes the path in Settings."""
