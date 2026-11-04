@@ -40,10 +40,19 @@ def release_single_instance_lock():
         _instance_mutex = None
 
 if os.name == 'nt':
-    # HANDLE is pointer-sized; ctypes' default c_int truncates on 64-bit Windows.
-    ctypes.windll.kernel32.CreateMutexW.restype = ctypes.c_void_p
-    _instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
-    if ctypes.windll.kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
+    # Declare both argument *and* result widths for the Win64 HANDLE API.
+    # Otherwise CloseHandle can silently receive a truncated pointer.
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.CreateMutexW.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p,
+    ]
+    _kernel32.CreateMutexW.restype = ctypes.c_void_p
+    _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    _kernel32.CloseHandle.restype = ctypes.c_int
+    _instance_mutex = _kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+    if not _instance_mutex:
+        raise OSError("Unable to acquire single-instance mutex.")
+    if _kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
         ctypes.windll.user32.MessageBoxW(
             None,
             "Qwen3-TTS Studio is already running. Check your taskbar or Task Manager for the existing instance.",
@@ -137,7 +146,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from huggingface_hub import snapshot_download
-from urllib.parse import urlsplit
+from request_security import RequestSizeLimitMiddleware, is_trusted_origin
 from collections import OrderedDict
 import hashlib
 import secrets
@@ -308,8 +317,7 @@ async def protect_local_api(request: Request, call_next):
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
             if origin:
-                parts = urlsplit(origin)
-                if parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost"):
+                if not is_trusted_origin(origin, port=PORT):
                     return JSONResponse({"detail": "Untrusted origin."}, status_code=403)
             supplied = request.headers.get("x-local-token", "")
             if not secrets.compare_digest(supplied, SESSION_TOKEN):
@@ -317,8 +325,17 @@ async def protect_local_api(request: Request, call_next):
     response = await call_next(request)
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     return response
+
+# Outer ASGI middleware enforces a real byte limit on chunked requests (not just
+# Content-Length), before multipart parsing allocates reference audio in memory.
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES,
+                   expected_token=SESSION_TOKEN, port=PORT)
 
 @app.get("/api/session")
 def get_session():
@@ -371,7 +388,7 @@ def generate_audio(
             ref_audio.file.close()
     if not generation_gate.acquire(blocking=False):
         raise HTTPException(429, "A synthesis job is already running.")
-    started = time.perf_counter()
+    wall_started = time.perf_counter()
     try:
         # The lock protects both model replacement and every operation that uses it.
         with model_lock:
@@ -396,9 +413,12 @@ def generate_audio(
                 print(f"Splitting speech into {len(segments)} sentences.")
             prompt = None
             if cloning:
+                # Fixed-size digests avoid ambiguity between audio and transcript bytes.
+                audio_digest = hashlib.sha256(payload).digest()
+                transcript_digest = hashlib.sha256(ref_text.encode("utf-8")).digest()
                 cache_key = hashlib.sha256(
-                    payload + b"\\0" + ref_text.encode("utf-8") +
-                    b"\\0" + str(bool(ref_text.strip())).encode("ascii")
+                    audio_digest + transcript_digest +
+                    bytes([1 if ref_text.strip() else 0])
                 ).hexdigest()
                 prompt = voice_prompt_cache.get(cache_key)
                 if prompt is None:
@@ -414,6 +434,7 @@ def generate_audio(
             all_segments = []
             sr = None
             total_frames = 0
+            inference_started = time.perf_counter()
             for index, segment in enumerate(segments):
                 if cloning:
                     wavs, segment_sr = model.generate_voice_clone(
@@ -446,9 +467,11 @@ def generate_audio(
             buffer = io.BytesIO()
             sf.write(buffer, final_audio, sr, format="WAV", subtype="PCM_16")
             wav_bytes = buffer.getvalue()
-            elapsed = time.perf_counter() - started
+            elapsed = time.perf_counter() - inference_started
+            wall_elapsed = time.perf_counter() - wall_started
             rtf = elapsed / max(0.001, len(final_audio) / sr)
-            print(f"[Inference] {len(segments)} segments, {elapsed:.2f}s, RTF {rtf:.3f}")
+            print(f"[Inference] {len(segments)} segments, {elapsed:.2f}s synth / "
+                  f"{wall_elapsed:.2f}s end-to-end, RTF {rtf:.3f}")
             clip_id = secrets.token_urlsafe(16)
             with audio_lock:
                 audio_archive[clip_id] = wav_bytes
@@ -460,6 +483,7 @@ def generate_audio(
                 headers={"X-TTS-Segments": str(len(segments)),
                          "X-TTS-Clip-ID": clip_id,
                          "X-TTS-RTF": f"{rtf:.4f}",
+                         "X-TTS-Wall-Time": f"{wall_elapsed:.4f}",
                          "X-TTS-Seed": str(seed) if seed is not None else ""},
             )
     except HTTPException:
@@ -470,7 +494,7 @@ def generate_audio(
         print(f"Generation failed: {exc}")
         if isinstance(exc, torch.cuda.OutOfMemoryError):
             raise HTTPException(507, "GPU memory exhausted. Close other GPU apps or use shorter text.") from exc
-        raise HTTPException(500, str(exc)) from exc
+        raise HTTPException(500, "Speech generation failed. Check the application logs.") from exc
     finally:
         generation_gate.release()
 
@@ -503,12 +527,14 @@ def get_capabilities():
 
 
 @app.post("/api/load")
-async def trigger_load():
+async def trigger_load(model_type: str = "custom"):
     """Retry a model load — used after the user fixes the path in Settings."""
+    if model_type not in MODEL_IDS:
+        raise HTTPException(400, "Unknown model type.")
     if model_status["state"] == "loading":
         return {"status": "loading", "detail": model_status["detail"]}
-    set_model_status("loading", "Loading model into memory…")
-    threading.Thread(target=preload_model, daemon=True).start()
+    set_model_status("loading", f"Loading {model_type} model into memory…")
+    threading.Thread(target=preload_model, args=(model_type,), daemon=True).start()
     return {"status": "loading", "detail": model_status["detail"]}
 
 class ConfigUpdate(BaseModel):

@@ -9,7 +9,7 @@ import { PlayerBar } from './components/PlayerBar';
 import { SettingsModal } from './components/SettingsModal';
 import { Button } from './components/ui/Button';
 import { useTheme } from './useTheme';
-import { apiFetch } from './api';
+import { apiFetch, readApiError } from './api';
 
 const initialConfig: TTSConfig = {
   text: '', speaker: SPEAKERS[0], language: LANGUAGES[0], styleInstruction: '',
@@ -43,6 +43,7 @@ const App: React.FC = () => {
   const takesRef = useRef<AudioTake[]>([]);
   const busyRef = useRef(false);
   const modelTypeRef = useRef<string | null>(null);
+  const capabilitiesLoadingRef = useRef(false);
   const generateRef = useRef<() => void>(() => {});
 
   const selectedModel = config.mode === 'clone' ? 'base' : 'custom';
@@ -62,7 +63,7 @@ const App: React.FC = () => {
   const refreshCapabilities = useCallback(async () => {
     try {
       const response = await apiFetch('/api/capabilities');
-      if (!response.ok) return;
+      if (!response.ok) return false;
       const data = await response.json();
       const normalize = (values: unknown, defaults: string[]): string[] =>
         Array.isArray(values)
@@ -72,8 +73,16 @@ const App: React.FC = () => {
       const speakers = normalize(data.speakers, SPEAKERS);
       const languages = normalize(data.languages, LANGUAGES);
       if (speakers.length) setSpeakerOptions(speakers);
-      if (languages.length) setLanguageOptions([...new Set(['Auto', ...languages])]);
-    } catch (e) { console.warn('Capabilities unavailable; using built-in options', e); }
+      if (languages.length) {
+        setLanguageOptions([...new Map(
+          ['Auto', ...languages].map((value) => [value.toLowerCase(), value])
+        ).values()]);
+      }
+      return true;
+    } catch (e) {
+      console.warn('Capabilities unavailable; using built-in options', e);
+      return false;
+    }
   }, []);
 
   useEffect(() => {
@@ -81,23 +90,32 @@ const App: React.FC = () => {
     let timer = 0;
     let failures = 0;
     const poll = async () => {
+      // Never allow a stalled HTTP request to stop the status poll permanently.
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 7000);
       try {
-        const res = await apiFetch('/api/status');
+        const res = await apiFetch('/api/status', { signal: controller.signal });
         if (!res.ok) throw new Error('Status endpoint unavailable');
         const data = await res.json();
         if (cancelled) return;
         failures = 0;
         setModelState(data.status);
         setModelDetail(data.detail || '');
-        if (data.modelType && data.modelType !== modelTypeRef.current) {
-          modelTypeRef.current = data.modelType;
-          void refreshCapabilities();
+        if (data.modelType && data.modelType !== modelTypeRef.current
+            && !capabilitiesLoadingRef.current) {
+          capabilitiesLoadingRef.current = true;
+          const type = data.modelType as string;
+          void refreshCapabilities().then((ok) => {
+            if (ok) modelTypeRef.current = type;
+          }).finally(() => { capabilitiesLoadingRef.current = false; });
         }
       } catch {
         if (++failures >= 3 && !cancelled) {
           setModelState('error');
           setModelDetail('Local backend is unreachable. Check the server console.');
         }
+      } finally {
+        clearTimeout(timeout);
       }
       if (!cancelled) timer = window.setTimeout(poll, 1500);
     };
@@ -107,18 +125,17 @@ const App: React.FC = () => {
 
   const retryLoad = useCallback(async () => {
     setModelState('loading');
-    setModelDetail('Loading CustomVoice model…');
+    setModelDetail(`Loading ${selectedModel === 'base' ? 'Voice Clone' : 'CustomVoice'} model…`);
     try {
-      const res = await apiFetch('/api/load', { method: 'POST' });
+      const res = await apiFetch(`/api/load?model_type=${selectedModel}`, { method: 'POST' });
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || 'Load failed');
+        throw new Error(await readApiError(res, 'Load failed'));
       }
     } catch (e) {
       setModelState('error');
       setModelDetail(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [selectedModel]);
 
   useEffect(() => {
     refreshAppConfig();
@@ -144,12 +161,14 @@ const App: React.FC = () => {
     audio.addEventListener('pause', onPause);
     audio.addEventListener('timeupdate', onTime);
     audio.addEventListener('loadedmetadata', onMeta);
+    audio.addEventListener('durationchange', onMeta);
     audio.addEventListener('error', onError);
     return () => {
       audio.pause();
       for (const [event, listener] of [
         ['ended', onEnded], ['playing', onPlaying], ['pause', onPause],
-        ['timeupdate', onTime], ['loadedmetadata', onMeta], ['error', onError],
+        ['timeupdate', onTime], ['loadedmetadata', onMeta],
+        ['durationchange', onMeta], ['error', onError],
       ] as const) audio.removeEventListener(event, listener);
       takesRef.current.forEach((take) => URL.revokeObjectURL(take.url));
     };
@@ -173,12 +192,15 @@ const App: React.FC = () => {
     removed.forEach((old) => URL.revokeObjectURL(old.url));
     takesRef.current = next;
     setTakes(next);
-    selectTake(take);
   };
 
   const handleGenerate = async () => {
     if (busyRef.current || !config.text.trim() || !canTryGenerate) return;
     if (config.mode === 'clone' && !config.refAudioFile) return;
+    if (config.text.length > 20000) {
+      setError('Text exceeds the 20,000-character maximum.');
+      return;
+    }
     if (!config.longForm && config.text.length > 1200) {
       setError('Enable Long-form mode to synthesize more than 1,200 characters.');
       return;
@@ -196,6 +218,7 @@ const App: React.FC = () => {
     const baseSeed = config.seed ? Number(config.seed)
       : count > 1 ? Math.floor(Math.random() * 2147483600) : null;
     let successes = 0;
+    const completedTakes: AudioTake[] = [];
     try {
       for (let index = 0; index < count; index++) {
         setGenerationProgress(`Generating take ${index + 1} of ${count}…`);
@@ -239,8 +262,7 @@ const App: React.FC = () => {
         if (seed !== null) form.append('seed', String(seed));
         const response = await apiFetch('/api/generate', { method: 'POST', body: form });
         if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data.detail || `Server error (${response.status})`);
+          throw new Error(await readApiError(response, `Server error (${response.status})`));
         }
         const blob = await response.blob();
         if (blob.size < 44) throw new Error('The server returned empty audio.');
@@ -258,6 +280,7 @@ const App: React.FC = () => {
             ? Number(response.headers.get('X-TTS-RTF')) : null,
         };
         addTake(take);
+        completedTakes.push(take);
         successes++;
       }
       setStatus(AppStatus.SUCCESS);
@@ -267,6 +290,9 @@ const App: React.FC = () => {
       setError(err instanceof Error ? err.message : String(err));
       setStatus(successes ? AppStatus.SUCCESS : AppStatus.ERROR);
     } finally {
+      // Avoid cutting off each candidate's playback while subsequent takes
+      // are still generating. Play the first complete candidate only once.
+      if (completedTakes.length) selectTake(completedTakes[0]);
       busyRef.current = false;
       setGenerationProgress('');
     }
@@ -305,10 +331,17 @@ const App: React.FC = () => {
     const name = `qwen3-tts-${activeTake.speaker.replace(/[^\w-]/g, '_')}-${activeTake.createdAt}.wav`;
     const bridge = (window as any).pywebview?.api?.save_audio;
     if (bridge && activeTake.clipId) {
-      const result = await bridge(activeTake.clipId, name);
-      if (result?.saved) return;
-      if (result?.error) { setError(result.error); return; }
-      return; // User cancelled the native Save dialog.
+      try {
+        const result = await bridge(activeTake.clipId, name);
+        if (result?.saved) return;
+        if (result?.error) {
+          setError(`Native Save failed: ${result.error}. Falling back to download.`);
+        } else {
+          return; // User cancelled the native Save dialog.
+        }
+      } catch (err) {
+        setError(`Native Save failed: ${String(err)}. Falling back to download.`);
+      }
     }
     const link = document.createElement('a');
     link.href = activeTake.url;

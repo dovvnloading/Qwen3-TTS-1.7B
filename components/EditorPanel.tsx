@@ -19,6 +19,7 @@ export const EditorPanel: React.FC<EditorPanelProps> = ({ text, onChange, onSubm
     <div className="flex-1 min-w-0 p-5 flex flex-col">
       <div className="flex-1 relative rounded-xl shadow-neu-pressed">
         <textarea
+          maxLength={20000}
           value={text}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}

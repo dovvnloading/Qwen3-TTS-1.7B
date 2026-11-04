@@ -105,15 +105,43 @@ def decode_reference_audio(payload: bytes) -> tuple[np.ndarray, int]:
     if len(payload) > MAX_REFERENCE_BYTES:
         raise ValueError("Reference audio exceeds the 20 MB limit.")
     try:
-        samples, sr = sf.read(io.BytesIO(payload), dtype="float32", always_2d=True)
+        # Validate the decoder-reported frame count BEFORE allocating the PCM
+        # array: a tiny compressed upload can expand into hours of audio.
+        info = sf.info(io.BytesIO(payload))
+        if not 8000 <= info.samplerate <= 192000:
+            raise ValueError("Reference sample rate must be between 8 and 192 kHz.")
+        if not 1 <= info.channels <= 2:
+            raise ValueError("Reference audio must be mono or stereo.")
+        if not MIN_REFERENCE_SECONDS <= info.duration <= MAX_REFERENCE_SECONDS:
+            raise ValueError("Reference audio must be 1–90 seconds long.")
+        # Bound decoded allocation even if file metadata is malformed.
+        if info.frames <= 0 or info.frames > MAX_REFERENCE_SECONDS * info.samplerate:
+            raise ValueError("Invalid reference audio frame count.")
+        # Bound decoding itself, not only decoder metadata: a crafted header
+        # cannot force us to expand an unbounded amount of compressed audio.
+        max_frames = int(MAX_REFERENCE_SECONDS * info.samplerate)
+        samples, sr = sf.read(
+            io.BytesIO(payload), frames=max_frames + 1,
+            dtype="float32", always_2d=True,
+        )
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError("Unsupported or corrupt reference audio. Try WAV or FLAC.") from exc
-    if not 8000 <= sr <= 192000:
-        raise ValueError("Reference sample rate must be between 8 and 192 kHz.")
+    if sr != info.samplerate or len(samples) > MAX_REFERENCE_SECONDS * sr:
+        raise ValueError("Reference audio exceeds 90 seconds or has invalid metadata.")
     duration = len(samples) / sr
-    if not MIN_REFERENCE_SECONDS <= duration <= MAX_REFERENCE_SECONDS:
-        raise ValueError("Reference audio must be 1–90 seconds long.")
+    if duration < MIN_REFERENCE_SECONDS:
+        raise ValueError("Reference audio must be at least one second long.")
     mono = np.mean(samples, axis=1).astype(np.float32)
+    if samples.shape[1] == 2:
+        # Anti-phase stereo can cancel voices when mixed to mono. Prefer a
+        # non-silent channel if the downmix nearly cancels the source.
+        individual_rms = np.sqrt(np.mean(np.square(samples.astype(np.float64)), axis=0))
+        mixed_rms = float(np.sqrt(np.mean(np.square(mono.astype(np.float64)))))
+        loudest = int(np.argmax(individual_rms))
+        if individual_rms[loudest] > 0.001 and mixed_rms < 0.1 * individual_rms[loudest]:
+            mono = samples[:, loudest].copy()
     if not np.all(np.isfinite(mono)):
         raise ValueError("Reference audio contains invalid samples.")
     if float(np.max(np.abs(mono))) < 0.001:

@@ -1,3 +1,5 @@
 numpy>=1.26,<3
 soundfile>=0.12,<1
 pytest>=8,<10
+fastapi>=0.116,<1
+httpx>=0.27,<1

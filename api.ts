@@ -25,3 +25,20 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   if (response.status === 403 && method !== 'GET') sessionPromise = null;
   return response;
 }
+
+/** FastAPI returns a string detail or a list of Pydantic validation errors. */
+export async function readApiError(res: Response, fallback: string): Promise<string> {
+  let body: any;
+  try { body = await res.json(); } catch { return fallback; }
+  const detail = body?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((issue: any) => {
+      const location = Array.isArray(issue?.loc) ? issue.loc.join('.') : '';
+      const message = typeof issue?.msg === 'string' ? issue.msg : '';
+      return [location, message].filter(Boolean).join(': ');
+    }).filter(Boolean);
+    if (messages.length) return messages.join('; ');
+  }
+  return fallback;
+}
